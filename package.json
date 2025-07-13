@@ -1,0 +1,83 @@
+{
+  "name": "arduino-connector",
+  "version": "1.0.0",
+  "description": "시럽조제기 연결 관리자",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "dist": "electron-builder --publish=never",
+    "build-installer": "electron-builder --win --x64 --config.compression=maximum"
+  },
+  "keywords": [
+    "arduino",
+    "connector",
+    "syrup",
+    "dispenser"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.13.3",
+    "electron-packager": "^17.1.2"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "iconv-lite": "^0.6.3",
+    "moment": "^2.29.4",
+    "node-cron": "^3.0.3"
+  },
+  "build": {
+    "appId": "com.yourcompany.arduino-connector",
+    "productName": "시럽조제기 연결 관리자",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "gui-editor.js",
+      "layout-editor.js",
+      "package.json",
+      "connections.json",
+      "auto_dispensing_settings.json",
+      "medicine_transmission_status.json",
+      "transmission_status.json",
+      "prescription_path.txt",
+      "node_modules/axios/**/*",
+      "node_modules/iconv-lite/**/*",
+      "node_modules/moment/**/*",
+      "node_modules/node-cron/**/*",
+      "!node_modules/**/*.md",
+      "!node_modules/**/*.txt",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.d.ts",
+      "!node_modules/**/test/**/*",
+      "!node_modules/**/tests/**/*",
+      "!node_modules/**/example/**/*",
+      "!node_modules/**/examples/**/*",
+      "!node_modules/**/docs/**/*",
+      "!node_modules/**/doc/**/*"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "forceCodeSigning": false
+  }
+}

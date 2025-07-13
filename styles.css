@@ -1,0 +1,897 @@
+/* 전체 스타일 */
+body {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', sans-serif;
+    font-weight: 400;
+    line-height: 1.6;
+    color: #333;
+}
+
+.container-fluid {
+    padding: 20px;
+}
+
+/* 네비게이션 바 */
+.navbar {
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+}
+
+.navbar-brand {
+    font-weight: 700;
+    font-size: 1.5rem;
+    letter-spacing: -0.5px;
+}
+
+/* 카드 스타일 */
+.card {
+    border: none;
+    border-radius: 15px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    margin-bottom: 20px;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+}
+
+.card-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 15px 15px 0 0 !important;
+    border: none;
+    padding: 15px 20px;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+}
+
+.card-title {
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.3px;
+}
+
+.card-body {
+    padding: 15px;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+}
+
+/* 테이블 스타일 */
+.table {
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    table-layout: fixed; /* 고정 테이블 레이아웃으로 변경 */
+    width: 100%;
+}
+
+.table thead th {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    font-weight: 600;
+    padding: 15px;
+    text-align: center;
+    vertical-align: middle;
+    letter-spacing: -0.2px;
+}
+
+/* 약물 정보 테이블 열 너비 설정 */
+#medicineTable th:nth-child(1),
+#medicineTable td:nth-child(1),
+#medicineTableHeader th:nth-child(1) {
+    width: 30%; /* 약물명 - 약간 줄임 */
+    text-align: left;
+    padding-left: 20px;
+}
+
+#medicineTable th:nth-child(2),
+#medicineTable td:nth-child(2),
+#medicineTableHeader th:nth-child(2) {
+    width: 12%; /* 약물코드 - 약간 줄임 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(3),
+#medicineTable td:nth-child(3),
+#medicineTableHeader th:nth-child(3) {
+    width: 10%; /* 1회복용량 - 약간 줄임 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(4),
+#medicineTable td:nth-child(4),
+#medicineTableHeader th:nth-child(4) {
+    width: 10%; /* 일일복용횟수 - 약간 줄임 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(5),
+#medicineTable td:nth-child(5),
+#medicineTableHeader th:nth-child(5) {
+    width: 8%; /* 일수 - 유지 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(6),
+#medicineTable td:nth-child(6),
+#medicineTableHeader th:nth-child(6) {
+    width: 10%; /* 전체용량 - 약간 줄임 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(7),
+#medicineTable td:nth-child(7),
+#medicineTableHeader th:nth-child(7) {
+    width: 20%; /* 전송상태 - 새로 추가 */
+    text-align: center;
+}
+
+/* 약물명 텍스트 오버플로우 처리 */
+#medicineTable td:nth-child(1) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 10px;
+}
+
+/* 약물명 헤더도 왼쪽 정렬 */
+#medicineTableHeader th:nth-child(1) {
+    text-align: left;
+    padding-left: 20px;
+}
+
+/* 환자 정보 테이블은 기존 스타일 유지 */
+#patientTable th,
+#patientTable td {
+    text-align: center;
+}
+
+.table tbody tr {
+    transition: background-color 0.3s ease;
+}
+
+.table tbody tr:hover {
+    background-color: rgba(102, 126, 234, 0.1);
+}
+
+.table tbody td {
+    padding: 12px 15px;
+    border: none;
+    border-bottom: 1px solid #eee;
+    text-align: center;
+    vertical-align: middle;
+    font-weight: 400;
+}
+
+/* 테이블 헤더 고정 */
+.table-header-fixed {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 10px 10px 0 0;
+    overflow: hidden;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.table-header-fixed table {
+    margin-bottom: 0;
+}
+
+.table-header-fixed thead th {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    font-weight: 600;
+    padding: 15px;
+    text-align: center;
+    vertical-align: middle;
+    letter-spacing: -0.2px;
+}
+
+/* 테이블 컨테이너 높이 제한 */
+.table-container {
+    max-height: 200px; /* 5줄 정도의 높이로 줄임 */
+    overflow-y: auto;
+    border-radius: 0 0 10px 10px;
+    border: 1px solid #dee2e6;
+    border-top: none;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    background: white;
+}
+
+.table-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.table-container::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.table-container::-webkit-scrollbar-thumb {
+    background: #667eea;
+    border-radius: 4px;
+}
+
+.table-container::-webkit-scrollbar-thumb:hover {
+    background: #5a6fd8;
+}
+
+/* 테이블 본문 스타일 */
+.table-container table {
+    margin-bottom: 0;
+}
+
+.table-container tbody tr {
+    transition: background-color 0.3s ease;
+}
+
+.table-container tbody tr:hover {
+    background-color: rgba(102, 126, 234, 0.1);
+}
+
+.table-container tbody td {
+    padding: 12px 15px;
+    border: none;
+    border-bottom: 1px solid #eee;
+    text-align: center;
+    vertical-align: middle;
+}
+
+/* 환자 정보 테이블과 약물 정보 테이블 높이 제한 */
+#patientTable {
+    margin-bottom: 0;
+}
+
+#medicineTable {
+    margin-bottom: 0;
+}
+
+/* 빈 행 스타일 */
+.empty-row {
+    background-color: #f8f9fa !important;
+    opacity: 0.5;
+}
+
+.empty-row:hover {
+    background-color: #f8f9fa !important;
+}
+
+.empty-row td {
+    border-bottom: 1px solid #dee2e6;
+    color: #6c757d;
+    text-align: center;
+    vertical-align: middle;
+}
+
+/* 버튼 스타일 */
+.btn {
+    border-radius: 25px;
+    padding: 10px 20px;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    border: none;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    letter-spacing: -0.2px;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+}
+
+.btn-lg {
+    font-weight: 600;
+    letter-spacing: -0.3px;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+}
+
+.btn-warning {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.btn-info {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+}
+
+.btn-secondary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    opacity: 0.7;
+}
+
+/* 입력 필드 스타일 */
+.form-control {
+    border-radius: 25px;
+    border: 2px solid #e9ecef;
+    padding: 12px 20px;
+    transition: all 0.3s ease;
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    font-weight: 400;
+}
+
+.form-control:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+}
+
+.form-label {
+    font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', sans-serif;
+    font-weight: 500;
+    letter-spacing: -0.2px;
+}
+
+/* 로그 컨테이너 */
+.log-container {
+    background: #1e1e1e;
+    color: #00ff00;
+    padding: 15px;
+    border-radius: 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 150px; /* 높이 줄임 */
+    overflow-y: auto;
+    border: 1px solid #333;
+}
+
+.log-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.log-container::-webkit-scrollbar-track {
+    background: #2e2e2e;
+    border-radius: 4px;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+    background: #667eea;
+    border-radius: 4px;
+}
+
+/* 리스트 그룹 스타일 */
+.list-group-item {
+    border: none;
+    border-radius: 10px;
+    margin-bottom: 5px;
+    transition: all 0.3s ease;
+    background: #f8f9fa;
+}
+
+.list-group-item:hover {
+    background: rgba(102, 126, 234, 0.1);
+    transform: translateX(5px);
+}
+
+.list-group-item.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+}
+
+/* 체크박스 스타일 */
+.form-check-input:checked {
+    background-color: #667eea;
+    border-color: #667eea;
+}
+
+/* 페이지 전환 애니메이션 */
+.page {
+    animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 상태 표시 */
+.status-connected {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.status-disconnected {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.status-dispensing {
+    color: #ffc107;
+    font-weight: 600;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+    .container-fluid {
+        padding: 10px;
+    }
+    
+    .card-body {
+        padding: 15px;
+    }
+    
+    .btn {
+        padding: 8px 16px;
+        font-size: 14px;
+    }
+    
+    .table-responsive {
+        font-size: 14px;
+    }
+}
+
+/* 로딩 애니메이션 */
+.loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(255,255,255,.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 알림 스타일 */
+.alert {
+    border-radius: 15px;
+    border: none;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+}
+
+.alert-success {
+    background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+    color: white;
+}
+
+.alert-danger {
+    background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+    color: white;
+}
+
+.alert-warning {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    color: white;
+}
+
+.alert-info {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    color: white;
+} 
+
+/* 선택된 행 스타일 */
+.table tbody tr.selected {
+    background-color: rgba(102, 126, 234, 0.2) !important;
+    border-left: 4px solid #667eea;
+}
+
+.table tbody tr.selected:hover {
+    background-color: rgba(102, 126, 234, 0.25) !important;
+}
+
+/* 리스트 그룹 아이템 선택 스타일 */
+.list-group-item.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-color: #667eea;
+    color: white;
+    font-weight: 600;
+}
+
+.list-group-item.active:hover {
+    background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+    border-color: #5a6fd8;
+}
+
+/* 약물별 전송상태 배지 스타일 */
+#medicineTable .badge {
+    font-size: 0.75rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.375rem;
+    font-weight: 500;
+}
+
+#medicineTable .badge.bg-secondary {
+    background-color: #6c757d !important;
+    color: white !important;
+}
+
+#medicineTable .badge.bg-success {
+    background-color: #198754 !important;
+    color: white !important;
+}
+
+#medicineTable .badge.bg-danger {
+    background-color: #dc3545 !important;
+    color: white !important;
+}
+
+#medicineTable .badge.bg-warning {
+    background-color: #ffc107 !important;
+    color: #212529 !important;
+}
+
+/* 약물 정보 테이블 연결 상태 색상 */
+#medicineTable tbody tr.connected {
+    background-color: rgba(13, 110, 253, 0.1) !important;
+    font-weight: 600;
+}
+#medicineTable tbody tr.connected td {
+    color: #0d6efd !important;
+}
+
+#medicineTable tbody tr.connected:hover {
+    background-color: rgba(13, 110, 253, 0.15) !important;
+}
+
+#medicineTable tbody tr.disconnected {
+    background-color: rgba(220, 53, 69, 0.1) !important;
+    font-weight: 600;
+}
+#medicineTable tbody tr.disconnected td {
+    color: #dc3545 !important;
+}
+
+#medicineTable tbody tr.disconnected:hover {
+    background-color: rgba(220, 53, 69, 0.15) !important;
+}
+
+/* 빈 행은 색상 적용하지 않음 */
+#medicineTable tbody tr.empty-row.connected,
+#medicineTable tbody tr.empty-row.disconnected {
+    background-color: #f8f9fa !important;
+    font-weight: 400;
+}
+#medicineTable tbody tr.empty-row.connected td,
+#medicineTable tbody tr.empty-row.disconnected td {
+    color: #6c757d !important;
+}
+
+/* 일반 테이블 연결 상태 색상 (기존 스타일 유지) */
+.table tbody tr.connected {
+    background-color: rgba(13, 110, 253, 0.1) !important;
+    color: #0d6efd !important;
+    font-weight: 600;
+}
+
+.table tbody tr.connected:hover {
+    background-color: rgba(13, 110, 253, 0.15) !important;
+}
+
+.table tbody tr.disconnected {
+    background-color: rgba(220, 53, 69, 0.1) !important;
+    color: #dc3545 !important;
+    font-weight: 600;
+}
+
+.table tbody tr.disconnected:hover {
+    background-color: rgba(220, 53, 69, 0.15) !important;
+}
+
+/* 빈 행은 색상 적용하지 않음 */
+.table tbody tr.empty-row.connected,
+.table tbody tr.empty-row.disconnected {
+    background-color: #f8f9fa !important;
+    color: #6c757d !important;
+    font-weight: 400;
+}
+
+/* 상태 표시 스타일 */
+.status-connected {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.status-disconnected {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.status-dispensing {
+    color: #ffc107;
+    font-weight: 600;
+}
+
+/* 네트워크 스캔 모달 스타일 */
+#networkScanModal .modal-dialog {
+    max-width: 90%;
+}
+
+#networkScanModal .modal-content {
+    border-radius: 15px;
+    border: none;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+
+#networkScanModal .modal-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 15px 15px 0 0;
+    border: none;
+    padding: 20px;
+}
+
+#networkScanModal .modal-title {
+    font-weight: 600;
+    font-size: 1.3rem;
+}
+
+#networkScanModal .modal-body {
+    padding: 20px;
+}
+
+#networkScanModal .table-responsive {
+    border-radius: 10px;
+    border: 1px solid #dee2e6;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+#networkScanModal .sticky-top {
+    position: sticky;
+    top: 0;
+    z-index: 1020;
+}
+
+#networkScanModal .form-select {
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+    padding: 8px 12px;
+    font-size: 14px;
+}
+
+#networkScanModal .form-select:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+}
+
+#networkScanModal .btn {
+    border-radius: 8px;
+    font-weight: 500;
+    padding: 8px 16px;
+    font-size: 14px;
+}
+
+#networkScanModal .form-control {
+    border-radius: 6px;
+    border: 1px solid #dee2e6;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+#networkScanModal .form-control:focus {
+    border-color: #667eea;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+}
+
+#networkScanModal .btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: 6px;
+}
+
+/* 스캔 상태 배지 스타일 */
+#scanStatus {
+    font-size: 14px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+#scanStatus.bg-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    animation: pulse 2s infinite;
+}
+
+#scanStatus.bg-success {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%) !important;
+}
+
+#scanStatus.bg-warning {
+    background: linear-gradient(135deg, #ffc107 0%, #fd7e14 100%) !important;
+    color: #212529 !important;
+}
+
+#scanStatus.bg-danger {
+    background: linear-gradient(135deg, #dc3545 0%, #e83e8c 100%) !important;
+}
+
+#scanStatus.bg-secondary {
+    background: linear-gradient(135deg, #6c757d 0%, #495057 100%) !important;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+    100% {
+        opacity: 1;
+    }
+}
+
+/* 약물별 전송상태에 따른 행 색상 */
+#medicineTable tbody tr.medicine-success {
+    background-color: rgba(25, 135, 84, 0.1) !important;
+}
+
+#medicineTable tbody tr.medicine-success:hover {
+    background-color: rgba(25, 135, 84, 0.15) !important;
+}
+
+#medicineTable tbody tr.medicine-failed {
+    background-color: rgba(220, 53, 69, 0.1) !important;
+}
+
+#medicineTable tbody tr.medicine-failed:hover {
+    background-color: rgba(220, 53, 69, 0.15) !important;
+}
+
+#medicineTable tbody tr.medicine-dispensing {
+    background-color: rgba(255, 193, 7, 0.1) !important;
+}
+
+#medicineTable tbody tr.medicine-dispensing:hover {
+    background-color: rgba(255, 193, 7, 0.15) !important;
+}
+
+/* 빈 행은 색상 적용하지 않음 */
+#medicineTable tbody tr.empty-row.medicine-success,
+#medicineTable tbody tr.empty-row.medicine-failed,
+#medicineTable tbody tr.empty-row.medicine-dispensing {
+    background-color: #f8f9fa !important;
+}
+
+/* 등록되지 않은 약물 스타일 */
+#medicineTable tbody tr.unregistered {
+    background-color: rgba(33, 37, 41, 0.1) !important;
+}
+
+#medicineTable tbody tr.unregistered:hover {
+    background-color: rgba(33, 37, 41, 0.15) !important;
+}
+
+#medicineTable tbody tr.unregistered td {
+    color: #212529 !important;
+}
+
+/* 빈 행은 색상 적용하지 않음 */
+#medicineTable tbody tr.empty-row.unregistered {
+    background-color: #f8f9fa !important;
+}
+
+#medicineTable tbody tr.empty-row.unregistered td {
+    color: #6c757d !important;
+}
+
+/* 수동조제 페이지 스타일 */
+#manualPage .card {
+    box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+    border-radius: 14px;
+}
+#manualPage .d-flex.flex-row {
+    gap: 48px !important;
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+#manualStatusCard {
+    min-width: 420px;
+    max-width: 520px;
+    width: 100%;
+}
+#manualStatusListTable {
+    table-layout: fixed;
+    width: 100%;
+}
+#manualStatusListTable th, #manualStatusListTable td {
+    text-align: center;
+    vertical-align: middle;
+    font-size: 0.97rem;
+    padding: 6px 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#manualStatusListBody tr.empty-row td {
+    color: #ccc;
+    background: #f8f9fa;
+    height: 32px;
+}
+@media (max-width: 991.98px) {
+    #manualPage .d-flex.flex-row {
+        flex-direction: column !important;
+        gap: 20px !important;
+        max-width: 100% !important;
+    }
+    #manualPage .card {
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    #manualStatusCard {
+        margin-left: 0 !important;
+        margin-top: 16px;
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+}
+
+#manualPage .gap-4 {
+    gap: 1.5rem !important;
+}
+
+.manual-row {
+    background: #f8f9fa;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    gap: 24px;
+    min-width: 440px;
+    max-width: 100%;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+.manual-row .dropdown {
+    min-width: 260px;
+    max-width: 340px;
+    flex: 2 1 0;
+}
+.manual-row .dropdown-toggle {
+    width: 100%;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.manual-row .status-connected,
+.manual-row .status-disconnected {
+    min-width: 90px;
+    max-width: 120px;
+    text-align: center;
+    display: inline-block;
+    font-size: 1.05rem;
+    margin-left: 8px;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+.manual-row .form-control {
+    min-width: 100px;
+    max-width: 120px;
+    margin-left: 8px;
+    margin-right: 8px;
+}
+.manual-row .btn-success {
+    min-width: 90px;
+    margin-left: 8px;
+}
+.manual-row .btn-outline-danger {
+    min-width: 40px;
+    padding: 6px 10px;
+    margin-left: 8px;
+} 
