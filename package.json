@@ -1,7 +1,7 @@
 {
-  "name": "arduino-connector",
+  "name": "auto-syrup",
   "version": "1.1.2",
-  "description": "시럽조제기 연결 관리자",
+  "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -34,23 +34,18 @@
     "node-cron": "^3.0.3"
   },
   "build": {
-    "appId": "com.yourcompany.arduino-connector",
-    "productName": "시럽조제기 연결 관리자",
+    "appId": "com.autosyrup.app",
+    "productName": "오토시럽",
     "directories": {
       "output": "release",
-      "buildResources": "build"
+      "buildResources": "assets"
     },
     "publish": {
       "provider": "github",
       "owner": "pharmcoder-kr",
       "repo": "prescription"
     },
-    "updater": {
-      "allowDowngrade": false,
-      "allowPrerelease": false,
-      "autoDownload": false,
-      "autoInstallOnAppQuit": true
-    },
+    "icon": "assets/icon.svg",
     "files": [
       "main.js",
       "renderer.js",

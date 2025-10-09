@@ -79,8 +79,8 @@ function createWindow() {
       contextIsolation: false,
       enableRemoteModule: true
     },
-    icon: path.join(__dirname, 'assets', 'icon.png'),
-    title: '시럽조제기 연결 관리자',
+    icon: path.join(__dirname, 'assets', 'icon.svg'),
+    title: '오토시럽',
     show: false,
     autoHideMenuBar: true,
     menuBarVisible: false
