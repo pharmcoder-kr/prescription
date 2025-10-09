@@ -1,6 +1,6 @@
 {
   "name": "arduino-connector",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "description": "시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
@@ -8,7 +8,10 @@
     "dev": "electron . --dev",
     "build": "electron-builder",
     "dist": "electron-builder --publish=never",
-    "build-installer": "electron-builder --win --x64 --config.compression=maximum"
+    "build-installer": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false",
+    "build-portable": "electron-builder --win --x64 --config.compression=maximum --config.win.target=portable",
+    "build-nsis": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false --config.win.target=nsis",
+    "build-all": "npm run build && npm run build-nsis"
   },
   "keywords": [
     "arduino",
@@ -25,6 +28,7 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
+    "electron-updater": "^6.1.4",
     "iconv-lite": "^0.6.3",
     "moment": "^2.29.4",
     "node-cron": "^3.0.3"
@@ -35,6 +39,11 @@
     "directories": {
       "output": "release",
       "buildResources": "build"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "pharmcoder-kr",
+      "repo": "prescription"
     },
     "files": [
       "main.js",
@@ -68,9 +77,12 @@
     "compression": "maximum",
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
       ],
-      "icon": "build/icon.ico"
+      "signAndEditExecutable": false
     },
     "nsis": {
       "createDesktopShortcut": true,
@@ -78,6 +90,11 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
-    "forceCodeSigning": false
+    "forceCodeSigning": false,
+    "cscLink": null,
+    "cscKeyPassword": null,
+    "electronDownload": {
+      "cache": "./electron-cache"
+    }
   }
 }

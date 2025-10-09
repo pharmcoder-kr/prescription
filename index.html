@@ -17,17 +17,21 @@
             <div class="container-fluid">
                 <a class="navbar-brand" href="#">
                     <i class="fas fa-pills me-2"></i>
-                    오토시럽
+                    AUTO SYRUP
                 </a>
-                <div class="navbar-nav ms-auto">
+                <div class="navbar-nav ms-auto d-flex align-items-center">
+                    <span class="text-light me-3 small" id="appVersion">v1.0.0</span>
                     <button class="btn btn-outline-light me-2" onclick="showMainPage()">
                         <i class="fas fa-home me-1"></i>메인
                     </button>
                     <button class="btn btn-outline-light me-2" onclick="showManualPage()">
                         <i class="fas fa-edit me-1"></i>수동조제
                     </button>
-                    <button class="btn btn-outline-light" onclick="showNetworkPage()">
+                    <button class="btn btn-outline-light me-2" onclick="showNetworkPage()">
                         <i class="fas fa-cog me-1"></i>설정
+                    </button>
+                    <button class="btn btn-outline-light" onclick="checkForUpdatesManually()" title="업데이트 확인">
+                        <i class="fas fa-sync-alt"></i>
                     </button>
                 </div>
             </div>
@@ -87,8 +91,21 @@
                     <!-- 테이블 헤더 (고정) -->
                     <div class="table-header-fixed">
                         <table class="table table-striped mb-0" id="medicineTableHeader">
+                            <colgroup>
+                                <col style="width: 50px;">
+                                <col style="width: 25%;">
+                                <col style="width: 12%;">
+                                <col style="width: 10%;">
+                                <col style="width: 10%;">
+                                <col style="width: 8%;">
+                                <col style="width: 10%;">
+                                <col style="width: 15%;">
+                            </colgroup>
                             <thead class="table-dark">
                                 <tr>
+                                    <th style="width: 50px;">
+                                        <input type="checkbox" id="selectAllMedicineCheckbox" onchange="toggleAllMedicineSelections()">
+                                    </th>
                                     <th>약물명</th>
                                     <th>약물코드</th>
                                     <th>1회복용량</th>
@@ -103,6 +120,16 @@
                     <!-- 테이블 본문 (스크롤) -->
                     <div class="table-container">
                         <table class="table table-striped table-hover mb-0" id="medicineTable">
+                            <colgroup>
+                                <col style="width: 50px;">
+                                <col style="width: 25%;">
+                                <col style="width: 12%;">
+                                <col style="width: 10%;">
+                                <col style="width: 10%;">
+                                <col style="width: 8%;">
+                                <col style="width: 10%;">
+                                <col style="width: 15%;">
+                            </colgroup>
                             <tbody id="medicineTableBody">
                             </tbody>
                         </table>
@@ -116,8 +143,8 @@
                     <button class="btn btn-success btn-lg" onclick="startDispensing()">
                         <i class="fas fa-play me-2"></i>조제 시작 (F12)
                     </button>
-                    <button class="btn btn-warning btn-lg" onclick="retryFailedMedicines()">
-                        <i class="fas fa-redo me-2"></i>실패한 약물 재전송
+                    <button class="btn btn-warning btn-lg" onclick="retrySelectedMedicinesFromTable()">
+                        <i class="fas fa-redo me-2"></i>선택한 약물 재전송
                     </button>
                 </div>
             </div>
@@ -217,6 +244,35 @@
                         </div>
                     </div>
 
+                    <!-- 처방조제프로그램 선택 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-pills me-2"></i>처방조제프로그램 선택
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="prescriptionProgram" class="form-label">
+                                    <i class="fas fa-pills me-1"></i>처방조제프로그램
+                                </label>
+                                <select class="form-select" id="prescriptionProgram" onchange="onPrescriptionProgramChanged()">
+                                    <option value="pm3000">PM3000, 팜플러스20</option>
+                                    <option value="upam">유팜</option>
+                                </select>
+                                <small class="text-muted">사용 중인 처방조제프로그램을 선택하세요. 선택한 프로그램에 따라 데이터 파싱 방식이 변경됩니다.</small>
+                            </div>
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle me-2"></i>
+                                <strong>프로그램별 특징:</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li><strong>PM3000, 팜플러스20:</strong> TXT 파일 형식 (.txt)</li>
+                                    <li><strong>유팜:</strong> XML 파일 형식 (.xml)</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 자동 조제 설정 -->
                     <div class="card mb-4">
                         <div class="card-header">
@@ -232,6 +288,38 @@
                                 </label>
                             </div>
                             <small class="text-muted">새로운 처방전이 감지되면 자동으로 조제를 시작합니다.</small>
+                            <div class="alert alert-warning mt-3">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                <strong>주의:</strong> 자동 조제 시 시럽 최대량 설정이 적용됩니다. 초과하는 약물은 자동으로 실패 처리됩니다.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 시럽 최대량 설정 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-flask me-2"></i>시럽 최대량 설정
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label for="maxSyrupAmount" class="form-label">
+                                    <i class="fas fa-flask me-1"></i>시럽 최대량 (mL)
+                                </label>
+                                <input type="number" class="form-control" id="maxSyrupAmount" 
+                                       placeholder="100" min="1" max="1000" value="100">
+                                <small class="text-muted">시럽조제기의 최대 용량을 설정하세요. 설정된 최대량을 초과하는 약물은 전송되지 않으며, 자동 조제와 수동 조제 모두에 적용됩니다.</small>
+                            </div>
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle me-2"></i>
+                                <strong>설정 가이드:</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>기본값: 100mL (시럽조제기 표준 용량)</li>
+                                    <li>ex) 100mL 시럽병에 150mL 분주시 넘칠 수 있음</li>
+                                    <li>초과 시: 자동 조제에서는 실패 처리, 수동 조제에서는 경고 메시지</li>
+                                </ul>
+                            </div>
                         </div>
                     </div>
 
@@ -284,16 +372,16 @@
                     <!-- 연결된 기기 목록 -->
                     <div class="card">
                         <div class="card-header">
-                            <h5 class="card-title mb-0">
-                                <i class="fas fa-link me-2"></i>연결된 시럽조제기
-                            </h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <button class="btn btn-info btn-sm" onclick="checkConnectionStatus()">
-                                    <i class="fas fa-sync-alt me-1"></i>연결 상태 확인
+                            <div class="d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-link me-2"></i>연결된 시럽조제기
+                                </h5>
+                                <button class="btn btn-primary btn-sm" onclick="refreshConnectionStatus()" title="연결 상태 새로고침">
+                                    <i class="fas fa-sync-alt me-1"></i>상태 새로고침
                                 </button>
                             </div>
+                        </div>
+                        <div class="card-body">
                             <div class="table-responsive">
                                 <table class="table table-striped" id="connectedTable">
                                     <thead class="table-dark">
@@ -311,6 +399,50 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 업데이트 알림 모달 -->
+    <div class="modal fade" id="updateModal" tabindex="-1" aria-labelledby="updateModalLabel" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-info text-white">
+                    <h5 class="modal-title" id="updateModalLabel">
+                        <i class="fas fa-download me-2"></i>업데이트 사용 가능
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <p><strong>새로운 버전을 사용할 수 있습니다!</strong></p>
+                        <p>현재 버전: <span id="currentVersion">1.0.0</span></p>
+                        <p>새로운 버전: <span id="newVersion">1.0.1</span></p>
+                    </div>
+                    <div id="updateReleaseNotes" class="mb-3" style="max-height: 200px; overflow-y: auto; padding: 10px; background-color: #f8f9fa; border-radius: 5px;">
+                        <p class="mb-0 text-muted">업데이트 정보를 불러오는 중...</p>
+                    </div>
+                    <div id="updateProgress" class="mb-3" style="display: none;">
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" 
+                                 id="updateProgressBar" 
+                                 style="width: 0%">0%</div>
+                        </div>
+                        <p class="text-center mt-2 mb-0">
+                            <small id="updateProgressText">다운로드 준비 중...</small>
+                        </p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="updateLaterBtn">나중에</button>
+                    <button type="button" class="btn btn-primary" onclick="downloadUpdate()" id="updateDownloadBtn">
+                        <i class="fas fa-download me-1"></i>다운로드
+                    </button>
+                    <button type="button" class="btn btn-success" onclick="installUpdate()" id="updateInstallBtn" style="display: none;">
+                        <i class="fas fa-check me-1"></i>지금 설치
+                    </button>
                 </div>
             </div>
         </div>
@@ -376,6 +508,8 @@
             </div>
         </div>
     </div>
+
+
 
     <!-- 스크립트 -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>

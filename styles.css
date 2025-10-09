@@ -71,6 +71,19 @@ body {
     width: 100%;
 }
 
+/* 약물 테이블 특별 설정 */
+#medicineTable,
+#medicineTableHeader {
+    table-layout: fixed !important;
+    width: 100% !important;
+}
+
+/* colgroup이 있는 테이블 강제 고정 레이아웃 */
+#medicineTable[colgroup],
+#medicineTableHeader[colgroup] {
+    table-layout: fixed !important;
+}
+
 .table thead th {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
@@ -86,55 +99,63 @@ body {
 #medicineTable th:nth-child(1),
 #medicineTable td:nth-child(1),
 #medicineTableHeader th:nth-child(1) {
-    width: 30%; /* 약물명 - 약간 줄임 */
-    text-align: left;
-    padding-left: 20px;
+    width: 50px; /* 체크박스 컬럼 */
+    text-align: center;
+    padding: 10px 5px;
 }
 
 #medicineTable th:nth-child(2),
 #medicineTable td:nth-child(2),
 #medicineTableHeader th:nth-child(2) {
-    width: 12%; /* 약물코드 - 약간 줄임 */
-    text-align: center;
+    width: 25%; /* 약물명 */
+    text-align: left;
+    padding-left: 20px;
 }
 
 #medicineTable th:nth-child(3),
 #medicineTable td:nth-child(3),
 #medicineTableHeader th:nth-child(3) {
-    width: 10%; /* 1회복용량 - 약간 줄임 */
+    width: 12%; /* 약물코드 */
     text-align: center;
 }
 
 #medicineTable th:nth-child(4),
 #medicineTable td:nth-child(4),
 #medicineTableHeader th:nth-child(4) {
-    width: 10%; /* 일일복용횟수 - 약간 줄임 */
+    width: 10%; /* 1회복용량 */
     text-align: center;
 }
 
 #medicineTable th:nth-child(5),
 #medicineTable td:nth-child(5),
 #medicineTableHeader th:nth-child(5) {
-    width: 8%; /* 일수 - 유지 */
+    width: 10%; /* 일일복용횟수 */
     text-align: center;
 }
 
 #medicineTable th:nth-child(6),
 #medicineTable td:nth-child(6),
 #medicineTableHeader th:nth-child(6) {
-    width: 10%; /* 전체용량 - 약간 줄임 */
+    width: 8%; /* 일수 */
     text-align: center;
 }
 
 #medicineTable th:nth-child(7),
 #medicineTable td:nth-child(7),
 #medicineTableHeader th:nth-child(7) {
-    width: 20%; /* 전송상태 - 새로 추가 */
+    width: 10%; /* 전체용량 */
+    text-align: center;
+}
+
+#medicineTable th:nth-child(8),
+#medicineTable td:nth-child(8),
+#medicineTableHeader th:nth-child(8) {
+    width: 15%; /* 전송상태 */
     text-align: center;
 }
 
 /* 약물명 텍스트 오버플로우 처리 */
-#medicineTable td:nth-child(1) {
+#medicineTable td:nth-child(2) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -142,9 +163,22 @@ body {
 }
 
 /* 약물명 헤더도 왼쪽 정렬 */
-#medicineTableHeader th:nth-child(1) {
+#medicineTableHeader th:nth-child(2) {
     text-align: left;
     padding-left: 20px;
+}
+
+/* 체크박스 스타일 */
+.medicine-checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+#selectAllMedicineCheckbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
 }
 
 /* 환자 정보 테이블은 기존 스타일 유지 */
@@ -894,4 +928,125 @@ body {
     min-width: 40px;
     padding: 6px 10px;
     margin-left: 8px;
+}
+
+/* ============================================
+   업데이트 관련 스타일
+   ============================================ */
+
+/* 앱 버전 표시 스타일 */
+#appVersion {
+    font-size: 0.85rem;
+    padding: 5px 12px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 15px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+/* 업데이트 모달 스타일 */
+#updateModal .modal-content {
+    border-radius: 15px;
+    border: none;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+}
+
+#updateModal .modal-header {
+    border-radius: 15px 15px 0 0;
+    border: none;
+    padding: 20px;
+}
+
+#updateModal .modal-title {
+    font-weight: 600;
+    font-size: 1.3rem;
+}
+
+#updateModal .modal-body {
+    padding: 20px;
+}
+
+#updateModal .modal-footer {
+    border-top: 1px solid #dee2e6;
+    padding: 15px 20px;
+}
+
+/* 업데이트 릴리즈 노트 스타일 */
+#updateReleaseNotes {
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+#updateReleaseNotes p {
+    margin-bottom: 0.5rem;
+}
+
+#updateReleaseNotes ul {
+    margin-left: 20px;
+    margin-bottom: 0.5rem;
+}
+
+#updateReleaseNotes li {
+    margin-bottom: 0.3rem;
+}
+
+/* 업데이트 진행 상태 바 스타일 */
+#updateProgress {
+    margin-top: 10px;
+}
+
+#updateProgress .progress {
+    height: 25px;
+    border-radius: 12px;
+    background-color: #e9ecef;
+}
+
+#updateProgress .progress-bar {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    font-weight: 500;
+    font-size: 0.9rem;
+    line-height: 25px;
+}
+
+#updateProgressText {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+
+/* 업데이트 버튼 스타일 */
+#updateDownloadBtn,
+#updateInstallBtn {
+    min-width: 100px;
+}
+
+#updateLaterBtn {
+    min-width: 80px;
+}
+
+/* 업데이트 확인 버튼 애니메이션 */
+.btn-outline-light[onclick="checkForUpdatesManually()"] {
+    transition: all 0.3s ease;
+}
+
+.btn-outline-light[onclick="checkForUpdatesManually()"]:hover {
+    transform: rotate(180deg);
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 업데이트 알림 뱃지 (나중에 사용할 수 있음) */
+.update-badge {
+    position: relative;
+}
+
+.update-badge::after {
+    content: '';
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 10px;
+    height: 10px;
+    background-color: #dc3545;
+    border-radius: 50%;
+    border: 2px solid white;
+    animation: pulse 2s infinite;
 } 
