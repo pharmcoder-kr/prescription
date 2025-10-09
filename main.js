@@ -79,7 +79,7 @@ function createWindow() {
       contextIsolation: false,
       enableRemoteModule: true
     },
-    icon: path.join(__dirname, 'assets', 'icon.svg'),
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     title: '오토시럽',
     show: false,
     autoHideMenuBar: true,
