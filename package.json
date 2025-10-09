@@ -1,6 +1,6 @@
 {
   "name": "arduino-connector",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
@@ -45,6 +45,12 @@
       "owner": "pharmcoder-kr",
       "repo": "prescription"
     },
+    "updater": {
+      "allowDowngrade": false,
+      "allowPrerelease": false,
+      "autoDownload": false,
+      "autoInstallOnAppQuit": true
+    },
     "files": [
       "main.js",
       "renderer.js",
@@ -59,6 +65,7 @@
       "transmission_status.json",
       "prescription_path.txt",
       "node_modules/axios/**/*",
+      "node_modules/electron-updater/**/*",
       "node_modules/iconv-lite/**/*",
       "node_modules/moment/**/*",
       "node_modules/node-cron/**/*",
@@ -88,7 +95,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "differentialPackage": true
     },
     "forceCodeSigning": false,
     "cscLink": null,

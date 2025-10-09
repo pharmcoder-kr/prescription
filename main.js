@@ -10,6 +10,10 @@ let mainWindow;
 autoUpdater.autoDownload = false; // 자동 다운로드 비활성화 (사용자 선택하게)
 autoUpdater.autoInstallOnAppQuit = true; // 앱 종료 시 자동 설치
 
+// 효율적인 업데이트를 위한 설정
+autoUpdater.allowDowngrade = false; // 다운그레이드 방지
+autoUpdater.allowPrerelease = false; // 프리릴리즈 버전 방지
+
 // 개발 환경에서는 업데이트 확인 안 함
 if (!app.isPackaged) {
   autoUpdater.forceDevUpdateConfig = false;
