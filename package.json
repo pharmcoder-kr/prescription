@@ -1,6 +1,6 @@
 {
   "name": "auto-syrup",
-  "version": "1.1.2",
+  "version": "1.1.4",
   "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
@@ -45,7 +45,7 @@
       "owner": "pharmcoder-kr",
       "repo": "prescription"
     },
-    "icon": "assets/icon.svg",
+    "icon": "assets/icon.png",
     "files": [
       "main.js",
       "renderer.js",
