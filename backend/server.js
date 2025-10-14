@@ -33,6 +33,89 @@ app.get('/test', (req, res) => {
   res.send('서버가 정상 작동 중입니다!');
 });
 
+// 간단한 관리자 페이지 (환경 변수 없이)
+app.get('/simple-admin', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>간단한 관리자 페이지</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; }
+        .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
+        .btn-approve { background-color: #28a745; color: white; }
+        .btn-reject { background-color: #dc3545; color: white; }
+        .pharmacy { margin: 10px 0; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>오토시럽 관리자 페이지</h1>
+        <p style="text-align: center; color: #666;">환경 변수 문제로 인한 임시 페이지</p>
+        
+        <div class="section">
+            <h3>승인 대기 약국</h3>
+            <div id="pendingList">로딩 중...</div>
+        </div>
+        
+        <div class="section">
+            <h3>처리 완료 약국</h3>
+            <div id="processedList">로딩 중...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        
+        async function loadData() {
+            try {
+                // Supabase에서 직접 데이터 조회 (환경 변수 없이)
+                const response = await fetch(API_BASE + '/v1/admin/direct-pending');
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('pendingList').innerHTML = data.data.map(pharmacy => 
+                        '<div class="pharmacy">' +
+                        '<strong>' + pharmacy.name + '</strong><br>' +
+                        '요양기관번호: ' + pharmacy.ykiin + '<br>' +
+                        '사업자번호: ' + pharmacy.biz_no + '<br>' +
+                        '<button class="btn btn-approve" onclick="approvePharmacy(\\'' + pharmacy.id + '\\')">승인</button>' +
+                        '<button class="btn btn-reject" onclick="rejectPharmacy(\\'' + pharmacy.id + '\\')">거부</button>' +
+                        '</div>'
+                    ).join('');
+                } else {
+                    document.getElementById('pendingList').innerHTML = '<p>데이터 로딩 실패: ' + data.error + '</p>';
+                }
+            } catch (error) {
+                document.getElementById('pendingList').innerHTML = '<p>연결 오류: ' + error.message + '</p>';
+            }
+        }
+        
+        async function approvePharmacy(id) {
+            if (confirm('이 약국을 승인하시겠습니까?')) {
+                alert('승인 기능은 환경 변수 설정 후 사용 가능합니다.');
+            }
+        }
+        
+        async function rejectPharmacy(id) {
+            if (confirm('이 약국을 거부하시겠습니까?')) {
+                alert('거부 기능은 환경 변수 설정 후 사용 가능합니다.');
+            }
+        }
+        
+        loadData();
+    </script>
+</body>
+</html>
+  `);
+});
+
 // 관리자 페이지 HTML 직접 제공 (백업)
 app.get('/admin-backup', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
