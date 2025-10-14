@@ -30,6 +30,73 @@ let dispensingDevices = new Set(); // 조제 중인 기기들의 IP 주소 집�
 let isAutoDispensingInProgress = false; // 자동조제 진행 중 플래그 (중복 실행 방지)
 let connectionCheckIntervalMs = 15000; // 연결 상태 확인 주기 (기본값: 15초)
 let prescriptionProgram = 'pm3000'; // 처방조제프로그램 (기본값: PM3000)
+let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 방지)
+
+// ============================================
+// 파싱 이벤트 전송 (사용량 집계용)
+// ============================================
+
+/**
+ * 처방전 파싱 이벤트를 서버로 전송
+ * @param {string} filePath - 파싱한 파일 경로
+ */
+async function sendParseEvent(filePath) {
+    try {
+        // 중복 키 생성 (device_uid + 파일경로 + 수정시간)
+        const stats = fs.statSync(filePath);
+        const mtime = stats.mtimeMs;
+        const deviceUid = await getDeviceUid(); // device-uid.txt에서 읽기
+        
+        const idempotencyKey = `${deviceUid}_${filePath}_${mtime}`;
+        
+        // 이미 전송한 이벤트인지 확인
+        if (sentParseEvents.has(idempotencyKey)) {
+            return;
+        }
+        
+        const eventData = {
+            source: 'pharmIT3000',
+            count: 1,
+            idempotency_key: idempotencyKey,
+            ts: new Date().toISOString()
+        };
+        
+        // IPC를 통해 메인 프로세스로 전송
+        const result = await ipcRenderer.invoke('api:send-parse-event', eventData);
+        
+        if (result.success) {
+            sentParseEvents.add(idempotencyKey);
+            console.log('✅ 파싱 이벤트 전송 성공:', path.basename(filePath));
+        } else {
+            // 토큰이 없는 경우는 로그만 남기고 진행
+            if (result.error === 'no_token') {
+                console.log('⚠️ 약국 등록이 필요합니다. 파싱 이벤트가 전송되지 않습니다.');
+            } else {
+                console.warn('⚠️ 파싱 이벤트 전송 실패:', result.error);
+            }
+        }
+    } catch (error) {
+        // 에러가 발생해도 앱 사용에는 지장 없음
+        console.error('❌ 파싱 이벤트 전송 중 오류:', error);
+    }
+}
+
+/**
+ * device-uid.txt에서 디바이스 UID 읽기
+ */
+async function getDeviceUid() {
+    try {
+        const userDataPath = await ipcRenderer.invoke('get-user-data-path');
+        const deviceUidPath = path.join(userDataPath, 'device-uid.txt');
+        
+        if (fs.existsSync(deviceUidPath)) {
+            return fs.readFileSync(deviceUidPath, 'utf8').trim();
+        }
+    } catch (error) {
+        console.error('device UID 읽기 실패:', error);
+    }
+    return 'unknown';
+}
 
 // 전송 상태 헬퍼 함수들
 function getStatusText(status) {
@@ -1496,6 +1563,11 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
+            // 파싱 이벤트 전송 (사용량 집계용)
+            sendParseEvent(filePath).catch(err => {
+                console.error('파싱 이벤트 전송 중 오류:', err);
+            });
+            
         } else {
             // 유팜 - XML 파일 파싱
             content = buffer.toString('utf8');
@@ -1587,6 +1659,11 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
+            
+            // 파싱 이벤트 전송 (사용량 집계용)
+            sendParseEvent(filePath).catch(err => {
+                console.error('파싱 이벤트 전송 중 오류:', err);
+            });
         }
         
         // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경

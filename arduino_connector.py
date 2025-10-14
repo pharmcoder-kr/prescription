@@ -977,26 +977,85 @@ class ArduinoConnector:
                     
                     while retry_count < max_retries and not success:
                         try:
-                            # 총량을 기기에 전송 (TV 접두사와 FF FF FF 종료 신호 추가)
-                            data = f"TV{total_volume} FF FF FF"
+                            # 선택된 환자 정보 가져오기
+                            selected_patients = self.patient_tree.selection()
+                            patient_name = "Unknown"
+                            if selected_patients:
+                                patient_name = self.patient_tree.item(selected_patients[0])['values'][0]
+                            
+                            # 환자 이름과 총량을 JSON 형태로 전송
+                            data = {
+                                "patient_name": patient_name,
+                                "total_volume": total_volume
+                            }
                             headers = {
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json'
                             }
                             response = requests.post(f"http://{ip}/dispense", 
-                                                  json={"amount": data},
+                                                  json=data,
                                                   headers=headers,
-                                                  timeout=10)  # 타임아웃을 10초로 증가
+                                                  timeout=30)  # 타임아웃을 30초로 증가
                             
                             # 응답 상세 정보 로깅
                             self.log_message(f"응답 상태 코드: {response.status_code}")
                             self.log_message(f"응답 내용: {response.text}")
                             
-                            # ESP32의 응답 확인
-                            if response.status_code == 200 or "OK" in response.text:
+                            # JSON 파싱
+                            StaticJsonDocument<256> doc;  # 크기를 늘려서 환자 이름을 포함할 수 있도록 함
+                            DeserializationError err = deserializeJson(doc, response.text);
+                            if (!err && doc.containsKey("total_volume")) {
+                              int total_volume = doc["total_volume"];
+                              String patient_name = doc["patient_name"] | "Unknown";  # 환자 이름이 없으면 "Unknown"
+                              
+                              Serial.println("📥 환자 이름 수신: " + patient_name);
+                              Serial.println("📥 total_volume 수신: " + String(total_volume) + " mL");
+
+                              U_volume = total_volume;
+                              // HMI와 동일하게 목표량을 표시
+                              sendToNextion("tPump.txt=\"Vol=" + String(U_volume) + "mL\"");
+                              
+                              // 환자 이름을 HMI의 process.t2.txt에 전송
+                              sendToNextion("process.t2.txt=\"" + patient_name + "\"");
+
+                              // 1) 응답 먼저 전송
+                              String res = "OK";
+                              client.println("HTTP/1.1 200 OK");
+                              client.println("Content-Type: text/plain");
+                              client.print  ("Content-Length: "); client.println(res.length());
+                              client.println("Connection: close");
+                              client.println();
+                              client.print(res);
+                              client.flush();
+                              client.stop();
+
+                              if (pageSwitchedToProcess || !jobQueue.empty()) {
+                                jobQueue.push({total_volume, marginFlag});
+                                Serial.println("�� 현재 시퀀스 진행 중 또는 대기열 존재 → 작업 대기열에 추가됨");
+                              } else {
+                                jobQueue.push({ total_volume, marginFlag });
+                              }
+
+                              return;
+                            }
+                            
+                            // ESP32의 응답 확인
+                            if response.status_code == 200:
+                                if "BUSY" in response.text:
+                                    message = f"{pill_name} 조제 중 - 대기열에 추가됨"
+                                    self.log_message(message)
+                                    success = True
+                                elif "OK" in response.text:
                                 message = f"{pill_name} 총량 전달 성공"
                                 self.log_message(message)
                                 success = True
+                                else:
+                                    message = f"{pill_name} 총량 전달 실패 (시도 {retry_count + 1}/{max_retries})"
+                                    self.log_message(message)
+                                    retry_count += 1
+                                    if retry_count < max_retries:
+                                        self.log_message("3초 후 재시도합니다...")
+                                        time.sleep(3)  # 3초 대기 후 재시도
                             else:
                                 message = f"{pill_name} 총량 전달 실패 (시도 {retry_count + 1}/{max_retries})"
                                 self.log_message(message)
