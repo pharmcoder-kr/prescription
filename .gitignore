@@ -84,6 +84,10 @@ dist/
 build/
 release/
 
+# Electron cache (큰 파일들)
+electron-cache/
+*.zip
+
 # OS generated files
 .DS_Store
 .DS_Store?
