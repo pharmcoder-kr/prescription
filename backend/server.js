@@ -28,6 +28,130 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
+// 관리자 페이지 HTML 직접 제공 (백업)
+app.get('/admin-backup', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>오토시럽 관리자 페이지</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .admin-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 2rem 0; margin-bottom: 2rem; }
+        .card { border: none; box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075); margin-bottom: 1.5rem; }
+        .btn-approve { background-color: #28a745; border-color: #28a745; }
+        .btn-reject { background-color: #dc3545; border-color: #dc3545; }
+        .pharmacy-item { border: 1px solid #dee2e6; border-radius: 0.375rem; padding: 1rem; margin-bottom: 1rem; background-color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="admin-header">
+        <div class="container">
+            <h1><i class="fas fa-user-shield me-3"></i>오토시럽 관리자 페이지</h1>
+            <p class="mb-0">약국 등록 승인 및 관리</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-clock me-2"></i>승인 대기</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="pendingList">로딩 중...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-check-circle me-2"></i>처리 완료</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="processedList">로딩 중...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = window.location.origin;
+        const ADMIN_KEY = 'my-secret-admin-key-123';
+
+        async function loadPendingPharmacies() {
+            try {
+                const response = await fetch(API_BASE + '/v1/admin/pending', {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('pendingList').innerHTML = data.data.map(pharmacy => 
+                        '<div class="pharmacy-item"><h6>' + pharmacy.name + '</h6>' +
+                        '<p>요양기관번호: ' + pharmacy.ykiin + '<br>사업자번호: ' + pharmacy.biz_no + '</p>' +
+                        '<button class="btn btn-sm btn-approve me-2" onclick="approvePharmacy(\\'' + pharmacy.id + '\\')">승인</button>' +
+                        '<button class="btn btn-sm btn-reject" onclick="rejectPharmacy(\\'' + pharmacy.id + '\\')">거부</button></div>'
+                    ).join('');
+                }
+            } catch (error) {
+                document.getElementById('pendingList').innerHTML = '로딩 실패';
+            }
+        }
+
+        async function approvePharmacy(pharmacyId) {
+            if (confirm('이 약국을 승인하시겠습니까?')) {
+                try {
+                    const response = await fetch(API_BASE + '/v1/admin/approve', {
+                        method: 'POST',
+                        headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pharmacy_id: pharmacyId, action: 'approve' })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        alert('승인 완료!');
+                        loadPendingPharmacies();
+                    }
+                } catch (error) {
+                    alert('승인 실패');
+                }
+            }
+        }
+
+        async function rejectPharmacy(pharmacyId) {
+            if (confirm('이 약국을 거부하시겠습니까?')) {
+                try {
+                    const response = await fetch(API_BASE + '/v1/admin/approve', {
+                        method: 'POST',
+                        headers: { 'X-Admin-Key': ADMIN_KEY, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pharmacy_id: pharmacyId, action: 'reject' })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        alert('거부 완료!');
+                        loadPendingPharmacies();
+                    }
+                } catch (error) {
+                    alert('거부 실패');
+                }
+            }
+        }
+
+        // 페이지 로드 시 실행
+        loadPendingPharmacies();
+    </script>
+</body>
+</html>
+  `);
+});
+
 // 요청 로깅 미들웨어
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
