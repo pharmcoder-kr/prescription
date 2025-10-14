@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>오토시럽 관리자 페이지</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .admin-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+            margin-bottom: 1.5rem;
+        }
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #dee2e6;
+            font-weight: 600;
+        }
+        .btn-approve {
+            background-color: #28a745;
+            border-color: #28a745;
+        }
+        .btn-reject {
+            background-color: #dc3545;
+            border-color: #dc3545;
+        }
+        .status-badge {
+            font-size: 0.875rem;
+        }
+        .pharmacy-item {
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            background-color: #fff;
+        }
+        .loading {
+            text-align: center;
+            padding: 2rem;
+        }
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-header">
+        <div class="container">
+            <div class="row">
+                <div class="col-12">
+                    <h1><i class="fas fa-user-shield me-3"></i>오토시럽 관리자 페이지</h1>
+                    <p class="mb-0">약국 등록 승인 및 관리</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- 통계 카드 -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card stats-card">
+                    <div class="card-body text-center">
+                        <h3 id="totalPharmacies">-</h3>
+                        <p class="mb-0">전체 약국</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stats-card">
+                    <div class="card-body text-center">
+                        <h3 id="pendingPharmacies">-</h3>
+                        <p class="mb-0">승인 대기</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stats-card">
+                    <div class="card-body text-center">
+                        <h3 id="activePharmacies">-</h3>
+                        <p class="mb-0">승인 완료</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stats-card">
+                    <div class="card-body text-center">
+                        <h3 id="rejectedPharmacies">-</h3>
+                        <p class="mb-0">승인 거부</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 승인 대기 목록 -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-clock me-2"></i>승인 대기</h5>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadPendingPharmacies()">
+                            <i class="fas fa-sync-alt"></i> 새로고침
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="pendingList" class="loading">
+                            <i class="fas fa-spinner fa-spin me-2"></i>로딩 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 승인 완료/거부 목록 -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-check-circle me-2"></i>처리 완료</h5>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadProcessedPharmacies()">
+                            <i class="fas fa-sync-alt"></i> 새로고침
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="processedList" class="loading">
+                            <i class="fas fa-spinner fa-spin me-2"></i>로딩 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 월간 사용량 -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>월간 사용량</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-4">
+                                <select class="form-select" id="monthSelect">
+                                    <option value="2025-10">2025년 10월</option>
+                                    <option value="2025-09">2025년 9월</option>
+                                    <option value="2025-08">2025년 8월</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <button class="btn btn-primary" onclick="loadMonthlyUsage()">
+                                    <i class="fas fa-search me-2"></i>조회
+                                </button>
+                            </div>
+                        </div>
+                        <div id="usageList" class="loading">
+                            <i class="fas fa-spinner fa-spin me-2"></i>로딩 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 승인/거부 모달 -->
+    <div class="modal fade" id="approvalModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalTitle">약국 승인</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="pharmacyInfo"></div>
+                    <div class="mb-3">
+                        <label for="reasonInput" class="form-label">사유 (선택사항)</label>
+                        <textarea class="form-control" id="reasonInput" rows="3" placeholder="승인/거부 사유를 입력하세요..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-approve" id="approveBtn" onclick="processApproval('approve')">
+                        <i class="fas fa-check me-2"></i>승인
+                    </button>
+                    <button type="button" class="btn btn-reject" id="rejectBtn" onclick="processApproval('reject')">
+                        <i class="fas fa-times me-2"></i>거부
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = window.location.origin;
+        const ADMIN_KEY = 'my-secret-admin-key-123';
+        let currentPharmacyId = null;
+
+        // 페이지 로드 시 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStats();
+            loadPendingPharmacies();
+            loadProcessedPharmacies();
+            loadMonthlyUsage();
+        });
+
+        // 통계 로드
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/stats`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('totalPharmacies').textContent = data.stats.total;
+                    document.getElementById('pendingPharmacies').textContent = data.stats.pending;
+                    document.getElementById('activePharmacies').textContent = data.stats.active;
+                    document.getElementById('rejectedPharmacies').textContent = data.stats.rejected;
+                }
+            } catch (error) {
+                console.error('통계 로드 실패:', error);
+            }
+        }
+
+        // 승인 대기 목록 로드
+        async function loadPendingPharmacies() {
+            const container = document.getElementById('pendingList');
+            container.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>로딩 중...';
+
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/pending`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.data.length === 0) {
+                        container.innerHTML = '<div class="text-center text-muted">승인 대기 중인 약국이 없습니다.</div>';
+                    } else {
+                        container.innerHTML = data.data.map(pharmacy => `
+                            <div class="pharmacy-item">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <h6 class="mb-1">${pharmacy.name}</h6>
+                                        <p class="mb-1 text-muted">
+                                            <i class="fas fa-id-card me-1"></i>요양기관번호: ${pharmacy.ykiin}<br>
+                                            <i class="fas fa-building me-1"></i>사업자번호: ${pharmacy.biz_no}<br>
+                                            <i class="fas fa-envelope me-1"></i>이메일: ${pharmacy.contact_email || '없음'}<br>
+                                            <i class="fas fa-clock me-1"></i>등록일: ${new Date(pharmacy.created_at).toLocaleString('ko-KR')}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <button class="btn btn-sm btn-approve me-2" onclick="showApprovalModal('${pharmacy.id}', '${pharmacy.name}', 'approve')">
+                                            <i class="fas fa-check"></i> 승인
+                                        </button>
+                                        <button class="btn btn-sm btn-reject" onclick="showApprovalModal('${pharmacy.id}', '${pharmacy.name}', 'reject')">
+                                            <i class="fas fa-times"></i> 거부
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                } else {
+                    container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+                }
+            } catch (error) {
+                console.error('승인 대기 목록 로드 실패:', error);
+                container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+            }
+        }
+
+        // 처리 완료 목록 로드
+        async function loadProcessedPharmacies() {
+            const container = document.getElementById('processedList');
+            container.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>로딩 중...';
+
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/processed`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.data.length === 0) {
+                        container.innerHTML = '<div class="text-center text-muted">처리된 약국이 없습니다.</div>';
+                    } else {
+                        container.innerHTML = data.data.map(pharmacy => `
+                            <div class="pharmacy-item">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <h6 class="mb-1">${pharmacy.name}</h6>
+                                        <p class="mb-1 text-muted">
+                                            <i class="fas fa-id-card me-1"></i>요양기관번호: ${pharmacy.ykiin}<br>
+                                            <i class="fas fa-building me-1"></i>사업자번호: ${pharmacy.biz_no}<br>
+                                            <i class="fas fa-clock me-1"></i>처리일: ${new Date(pharmacy.last_seen_at).toLocaleString('ko-KR')}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <span class="badge ${pharmacy.status === 'active' ? 'bg-success' : 'bg-danger'} status-badge">
+                                            ${pharmacy.status === 'active' ? '승인됨' : '거부됨'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                } else {
+                    container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+                }
+            } catch (error) {
+                console.error('처리 완료 목록 로드 실패:', error);
+                container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+            }
+        }
+
+        // 월간 사용량 로드
+        async function loadMonthlyUsage() {
+            const container = document.getElementById('usageList');
+            const month = document.getElementById('monthSelect').value;
+            container.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>로딩 중...';
+
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/usage?month=${month}`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    if (data.data.length === 0) {
+                        container.innerHTML = '<div class="text-center text-muted">해당 월의 사용량 데이터가 없습니다.</div>';
+                    } else {
+                        container.innerHTML = `
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>약국명</th>
+                                            <th>요양기관번호</th>
+                                            <th>파싱 횟수</th>
+                                            <th>첫 사용</th>
+                                            <th>마지막 사용</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.data.map(usage => `
+                                            <tr>
+                                                <td>${usage.pharmacy.name}</td>
+                                                <td>${usage.pharmacy.ykiin}</td>
+                                                <td><span class="badge bg-primary">${usage.parse_count}회</span></td>
+                                                <td>${new Date(usage.first_seen).toLocaleDateString('ko-KR')}</td>
+                                                <td>${new Date(usage.last_seen).toLocaleDateString('ko-KR')}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+                    }
+                } else {
+                    container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+                }
+            } catch (error) {
+                console.error('월간 사용량 로드 실패:', error);
+                container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+            }
+        }
+
+        // 승인 모달 표시
+        function showApprovalModal(pharmacyId, pharmacyName, action) {
+            currentPharmacyId = pharmacyId;
+            const modal = new bootstrap.Modal(document.getElementById('approvalModal'));
+            
+            document.getElementById('modalTitle').textContent = action === 'approve' ? '약국 승인' : '약국 거부';
+            document.getElementById('pharmacyInfo').innerHTML = `
+                <div class="alert alert-info">
+                    <strong>${pharmacyName}</strong> 약국을 ${action === 'approve' ? '승인' : '거부'}하시겠습니까?
+                </div>
+            `;
+            document.getElementById('reasonInput').value = '';
+            
+            // 버튼 표시/숨김
+            document.getElementById('approveBtn').style.display = action === 'approve' ? 'inline-block' : 'none';
+            document.getElementById('rejectBtn').style.display = action === 'reject' ? 'inline-block' : 'none';
+            
+            modal.show();
+        }
+
+        // 승인/거부 처리
+        async function processApproval(action) {
+            const reason = document.getElementById('reasonInput').value;
+            
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/approve`, {
+                    method: 'POST',
+                    headers: {
+                        'X-Admin-Key': ADMIN_KEY,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        pharmacy_id: currentPharmacyId,
+                        action: action,
+                        reason: reason
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // 모달 닫기
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('approvalModal'));
+                    modal.hide();
+                    
+                    // 목록 새로고침
+                    loadStats();
+                    loadPendingPharmacies();
+                    loadProcessedPharmacies();
+                    
+                    // 성공 메시지
+                    alert(`${data.message}`);
+                } else {
+                    alert(`처리 실패: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('승인 처리 실패:', error);
+                alert('처리 중 오류가 발생했습니다.');
+            }
+        }
+    </script>
+</body>
+</html>

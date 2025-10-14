@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const path = require('path');
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
@@ -21,6 +22,11 @@ const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('he
 // 미들웨어
 app.use(cors());
 app.use(express.json());
+
+// 관리자 페이지 라우트
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
 
 // 요청 로깅 미들웨어
 app.use((req, res, next) => {
@@ -321,6 +327,70 @@ app.get('/v1/admin/pending', async (req, res) => {
 
   } catch (error) {
     console.error('승인 대기 목록 조회 중 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 처리 완료 목록 조회 (승인/거부된 약국들)
+app.get('/v1/admin/processed', async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_API_KEY) {
+      return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
+    }
+
+    const { data: pharmacies, error } = await supabase
+      .from('pharmacies')
+      .select('*')
+      .in('status', ['active', 'rejected'])
+      .order('last_seen_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: '처리 완료 목록 조회 실패' });
+    }
+
+    res.status(200).json({
+      success: true,
+      count: pharmacies.length,
+      data: pharmacies
+    });
+
+  } catch (error) {
+    console.error('처리 완료 목록 조회 중 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 통계 조회
+app.get('/v1/admin/stats', async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_API_KEY) {
+      return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
+    }
+
+    const { data: stats, error } = await supabase
+      .from('pharmacies')
+      .select('status');
+
+    if (error) {
+      return res.status(500).json({ error: '통계 조회 실패' });
+    }
+
+    const statsData = {
+      total: stats.length,
+      pending: stats.filter(p => p.status === 'pending').length,
+      active: stats.filter(p => p.status === 'active').length,
+      rejected: stats.filter(p => p.status === 'rejected').length
+    };
+
+    res.status(200).json({
+      success: true,
+      stats: statsData
+    });
+
+  } catch (error) {
+    console.error('통계 조회 중 오류:', error);
     res.status(500).json({ error: '서버 오류가 발생했습니다.' });
   }
 });
