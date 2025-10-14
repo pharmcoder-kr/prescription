@@ -237,7 +237,7 @@
                 <i class="fas fa-check me-2"></i>등록하기
             </button>
 
-            <button type="button" class="btn btn-skip" id="skipBtn">
+            <button type="button" class="btn btn-skip" id="skipBtn" style="display: none;">
                 나중에 등록하기 (오프라인 모드)
             </button>
         </form>
@@ -304,11 +304,17 @@
                 if (result.success) {
                     // 성공 메시지 표시
                     successMessage.style.display = 'block';
+                    successMessage.innerHTML = '<i class="fas fa-clock me-2"></i><strong>등록 완료!</strong> 관리자 승인 후 사용 가능합니다.';
+                    successMessage.className = 'alert alert-info';
                     
-                    // 2초 후 창 닫기
+                    // 버튼 비활성화
+                    enrollBtn.innerHTML = '<i class="fas fa-clock me-2"></i>승인 대기 중...';
+                    enrollBtn.disabled = true;
+                    
+                    // 3초 후 창 닫기
                     setTimeout(() => {
                         ipcRenderer.send('enroll:complete');
-                    }, 2000);
+                    }, 3000);
                 } else {
                     showError(result.error || '등록에 실패했습니다.');
                     resetButton();

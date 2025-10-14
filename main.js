@@ -192,6 +192,52 @@ async function verifyToken() {
   }
 }
 
+// 약국 상태 확인
+async function checkPharmacyStatus() {
+  try {
+    const token = await getToken();
+    if (!token) return null;
+
+    const response = await axios.get(`${API_BASE}/v1/auth/verify`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+      timeout: 5000
+    });
+
+    return response.data?.pharmacy?.status || null;
+  } catch (error) {
+    console.error('약국 상태 확인 실패:', error);
+    return null;
+  }
+}
+
+// 승인 대기 메시지 표시
+function showPendingMessage() {
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: '승인 대기',
+    message: '약국 등록이 완료되었습니다.',
+    detail: '관리자 승인 후 사용 가능합니다. 승인까지 시간이 걸릴 수 있습니다.',
+    buttons: ['확인']
+  });
+}
+
+// 거부 메시지 표시
+function showRejectedMessage() {
+  dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: '등록 거부',
+    message: '약국 등록이 거부되었습니다.',
+    detail: '관리자에게 문의하시거나 다시 등록해주세요.',
+    buttons: ['다시 등록', '확인']
+  }).then((result) => {
+    if (result.response === 0) { // 다시 등록
+      deleteToken().then(() => {
+        createEnrollWindow();
+      });
+    }
+  });
+}
+
 // 등록 창 생성
 function createEnrollWindow() {
   if (enrollWindow) {
@@ -350,23 +396,33 @@ app.whenReady().then(async () => {
   // 메인 윈도우 생성
   createWindow();
   
-  // 토큰이 없으면 등록 창 표시
-  if (!token) {
-    console.log('⚠️ 토큰이 없습니다. 등록 창을 표시합니다.');
-    setTimeout(() => {
-      createEnrollWindow();
-    }, 1000);
-  } else {
-    // 토큰 검증
-    const isValid = await verifyToken();
-    if (!isValid) {
-      console.log('⚠️ 토큰이 유효하지 않습니다. 등록 창을 표시합니다.');
-      await deleteToken();
-      createEnrollWindow();
-    } else {
-      console.log('✅ 인증 완료');
-    }
-  }
+          // 토큰이 없으면 등록 창 표시
+          if (!token) {
+            console.log('⚠️ 토큰이 없습니다. 등록 창을 표시합니다.');
+            setTimeout(() => {
+              createEnrollWindow();
+            }, 1000);
+          } else {
+            // 토큰 검증
+            const isValid = await verifyToken();
+            if (!isValid) {
+              console.log('⚠️ 토큰이 유효하지 않습니다. 등록 창을 표시합니다.');
+              await deleteToken();
+              createEnrollWindow();
+            } else {
+              // 약국 상태 확인
+              const status = await checkPharmacyStatus();
+              if (status === 'pending') {
+                console.log('⚠️ 약국 승인 대기 중입니다.');
+                showPendingMessage();
+              } else if (status === 'rejected') {
+                console.log('⚠️ 약국 등록이 거부되었습니다.');
+                showRejectedMessage();
+              } else {
+                console.log('✅ 인증 완료');
+              }
+            }
+          }
   
   // 앱 시작 5초 후 업데이트 확인 (패키징된 앱에서만)
   if (app.isPackaged) {

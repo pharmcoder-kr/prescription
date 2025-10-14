@@ -74,7 +74,7 @@ app.post('/v1/auth/enroll', async (req, res) => {
       });
     }
 
-    // 1. 약국 정보 upsert (요양기관번호 기준)
+    // 1. 약국 정보 upsert (요양기관번호 기준) - 기본 상태는 pending
     const { data: pharmacy, error: pharmacyError } = await supabase
       .from('pharmacies')
       .upsert(
@@ -83,6 +83,7 @@ app.post('/v1/auth/enroll', async (req, res) => {
           biz_no: biz_no.trim(),
           name: name.trim(),
           contact_email: contact_email?.trim() || null,
+          status: 'pending', // 기본 상태는 승인 대기
           last_seen_at: new Date().toISOString()
         },
         { onConflict: 'ykiin' }
@@ -129,7 +130,7 @@ app.post('/v1/auth/enroll', async (req, res) => {
       { expiresIn: '365d' }
     );
 
-    console.log(`✅ 약국 등록 완료: ${name} (${ykiin})`);
+    console.log(`✅ 약국 등록 완료 (승인 대기): ${name} (${ykiin})`);
 
     res.status(200).json({
       success: true,
@@ -137,8 +138,10 @@ app.post('/v1/auth/enroll', async (req, res) => {
       pharmacy: {
         id: pharmacy.id,
         name: pharmacy.name,
-        ykiin: pharmacy.ykiin
-      }
+        ykiin: pharmacy.ykiin,
+        status: pharmacy.status
+      },
+      message: '등록이 완료되었습니다. 관리자 승인 후 사용 가능합니다.'
     });
 
   } catch (error) {
@@ -157,6 +160,24 @@ app.post('/v1/events/parse', authenticateToken, async (req, res) => {
     if (!idempotency_key) {
       return res.status(400).json({ 
         error: 'idempotency_key가 필요합니다.' 
+      });
+    }
+
+    // 약국 승인 상태 확인
+    const { data: pharmacy, error: pharmacyError } = await supabase
+      .from('pharmacies')
+      .select('status')
+      .eq('id', pharmacy_id)
+      .single();
+
+    if (pharmacyError || !pharmacy) {
+      return res.status(404).json({ error: '약국 정보를 찾을 수 없습니다.' });
+    }
+
+    if (pharmacy.status !== 'active') {
+      return res.status(403).json({ 
+        error: '관리자 승인이 필요합니다. 승인 후 사용 가능합니다.',
+        status: pharmacy.status
       });
     }
 
@@ -204,6 +225,102 @@ app.post('/v1/events/parse', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('이벤트 기록 중 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 관리자 승인 API
+app.post('/v1/admin/approve', async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_API_KEY) {
+      return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
+    }
+
+    const { pharmacy_id, action, reason } = req.body; // action: 'approve' | 'reject'
+    
+    if (!pharmacy_id || !action) {
+      return res.status(400).json({ 
+        error: 'pharmacy_id와 action이 필요합니다.' 
+      });
+    }
+
+    const newStatus = action === 'approve' ? 'active' : 'rejected';
+    
+    // 약국 상태 업데이트
+    const { data: pharmacy, error: pharmacyError } = await supabase
+      .from('pharmacies')
+      .update({ 
+        status: newStatus,
+        last_seen_at: new Date().toISOString()
+      })
+      .eq('id', pharmacy_id)
+      .select()
+      .single();
+
+    if (pharmacyError) {
+      return res.status(500).json({ error: '약국 상태 업데이트 실패' });
+    }
+
+    // 승인 로그 저장
+    const { error: logError } = await supabase
+      .from('pharmacy_approvals')
+      .insert({
+        pharmacy_id: pharmacy_id,
+        approved_by: 'admin', // 실제로는 관리자 ID
+        status: action,
+        reason: reason || null
+      });
+
+    if (logError) {
+      console.error('승인 로그 저장 실패:', logError);
+    }
+
+    console.log(`✅ 약국 ${action} 완료: ${pharmacy.name} (${pharmacy.ykiin})`);
+
+    res.status(200).json({
+      success: true,
+      message: `약국이 ${action === 'approve' ? '승인' : '거부'}되었습니다.`,
+      pharmacy: {
+        id: pharmacy.id,
+        name: pharmacy.name,
+        ykiin: pharmacy.ykiin,
+        status: pharmacy.status
+      }
+    });
+
+  } catch (error) {
+    console.error('승인 처리 중 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 승인 대기 목록 조회
+app.get('/v1/admin/pending', async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_API_KEY) {
+      return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
+    }
+
+    const { data: pharmacies, error } = await supabase
+      .from('pharmacies')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: '승인 대기 목록 조회 실패' });
+    }
+
+    res.status(200).json({
+      success: true,
+      count: pharmacies.length,
+      data: pharmacies
+    });
+
+  } catch (error) {
+    console.error('승인 대기 목록 조회 중 오류:', error);
     res.status(500).json({ error: '서버 오류가 발생했습니다.' });
   }
 });
