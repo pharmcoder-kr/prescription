@@ -19,6 +19,9 @@ const supabase = createClient(
 // JWT 시크릿 키 (환경 변수에서 읽기)
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
+// 관리자 API 키 (환경 변수에서 읽기)
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'my-secret-admin-key-123';
+
 // 미들웨어
 app.use(cors());
 app.use(express.json());
@@ -452,7 +455,7 @@ app.post('/v1/events/parse', authenticateToken, async (req, res) => {
 app.post('/v1/admin/approve', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
+    if (adminKey !== ADMIN_API_KEY) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -518,7 +521,7 @@ app.post('/v1/admin/approve', async (req, res) => {
 app.get('/v1/admin/pending', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
+    if (adminKey !== ADMIN_API_KEY) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -548,7 +551,7 @@ app.get('/v1/admin/pending', async (req, res) => {
 app.get('/v1/admin/processed', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
+    if (adminKey !== ADMIN_API_KEY) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -578,7 +581,7 @@ app.get('/v1/admin/processed', async (req, res) => {
 app.get('/v1/admin/stats', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
+    if (adminKey !== ADMIN_API_KEY) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -648,7 +651,7 @@ app.get('/v1/auth/verify', authenticateToken, async (req, res) => {
 // 관리자 인증 미들웨어
 function authenticateAdmin(req, res, next) {
   const adminKey = req.headers['x-admin-key'];
-  const expectedKey = process.env.ADMIN_API_KEY || 'my-secret-admin-key-123';
+  const expectedKey = ADMIN_API_KEY;
   
   console.log('Admin key check:', { received: adminKey, expected: expectedKey });
   
