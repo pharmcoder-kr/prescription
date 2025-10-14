@@ -28,7 +28,7 @@ const isDev = !app.isPackaged;
 // ============================================
 const SERVICE_NAME = 'AutoSyrupLink';
 const ACCOUNT_NAME = 'device-token';
-const API_BASE = process.env.API_BASE || 'https://your-api-url.com'; // ⚠️ 배포 후 변경 필요
+const API_BASE = 'https://autosyrup-backend.onrender.com';
 const TOKEN_FILE = path.join(app.getPath('userData'), 'auth-token.txt');
 const DEVICE_UID_FILE = path.join(app.getPath('userData'), 'device-uid.txt');
 
