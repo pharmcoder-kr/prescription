@@ -452,7 +452,7 @@ app.post('/v1/events/parse', authenticateToken, async (req, res) => {
 app.post('/v1/admin/approve', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_API_KEY) {
+    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -518,7 +518,7 @@ app.post('/v1/admin/approve', async (req, res) => {
 app.get('/v1/admin/pending', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_API_KEY) {
+    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -548,7 +548,7 @@ app.get('/v1/admin/pending', async (req, res) => {
 app.get('/v1/admin/processed', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_API_KEY) {
+    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
@@ -578,7 +578,7 @@ app.get('/v1/admin/processed', async (req, res) => {
 app.get('/v1/admin/stats', async (req, res) => {
   try {
     const adminKey = req.headers['x-admin-key'];
-    if (adminKey !== ADMIN_API_KEY) {
+    if (adminKey !== (process.env.ADMIN_API_KEY || 'my-secret-admin-key-123')) {
       return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
     }
 
