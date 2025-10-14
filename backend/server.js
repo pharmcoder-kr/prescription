@@ -28,8 +28,14 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
+// 간단한 테스트 페이지
+app.get('/test', (req, res) => {
+  res.send('서버가 정상 작동 중입니다!');
+});
+
 // 관리자 페이지 HTML 직접 제공 (백업)
 app.get('/admin-backup', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`
 <!DOCTYPE html>
 <html lang="ko">
@@ -559,8 +565,11 @@ app.get('/v1/auth/verify', authenticateToken, async (req, res) => {
 // 관리자 인증 미들웨어
 function authenticateAdmin(req, res, next) {
   const adminKey = req.headers['x-admin-key'];
+  const expectedKey = process.env.ADMIN_API_KEY || 'my-secret-admin-key-123';
   
-  if (!adminKey || adminKey !== process.env.ADMIN_API_KEY) {
+  console.log('Admin key check:', { received: adminKey, expected: expectedKey });
+  
+  if (!adminKey || adminKey !== expectedKey) {
     return res.status(403).json({ error: '관리자 권한이 필요합니다.' });
   }
   
