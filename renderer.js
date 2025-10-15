@@ -1812,7 +1812,13 @@ function parsePrescriptionFileWithoutEvent(filePath) {
 }
 
 function parsePrescriptionFile(filePath) {
-    if (parsedFiles.has(filePath)) return;
+    console.log(`🔵 parsePrescriptionFile 호출됨: ${path.basename(filePath)}`);
+    console.log(`📂 parsedFiles.has(${path.basename(filePath)}): ${parsedFiles.has(filePath)}`);
+    
+    if (parsedFiles.has(filePath)) {
+        console.log(`⚠️ 이미 파싱된 파일이므로 스킵: ${path.basename(filePath)}`);
+        return;
+    }
     
     // 디버깅: 현재 상태 확인
     console.log(`[파싱 체크] pharmacyStatus: ${pharmacyStatus}, 파일: ${path.basename(filePath)}`);
