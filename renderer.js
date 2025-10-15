@@ -328,7 +328,8 @@ async function initializeApp() {
         }
     }, 5 * 60 * 1000); // 5분마다
     detectNetworks();
-    parseAllPrescriptionFiles();
+    // 프로그램 시작 시 기존 파일들을 parsedFiles에 등록 (중복 파싱 방지)
+    registerExistingFiles();
     startPrescriptionMonitor();
     
     // 저장된 기기들 즉시 연결 시도
@@ -1533,6 +1534,30 @@ async function onPrescriptionProgramChanged() {
     }
 }
 
+// 기존 파일들을 parsedFiles에 등록 (파싱하지 않고 등록만)
+function registerExistingFiles() {
+    if (!prescriptionPath) {
+        return;
+    }
+    
+    try {
+        // 선택된 프로그램에 따라 파일 확장자 결정
+        const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+        const files = fs.readdirSync(prescriptionPath)
+            .filter(file => file.endsWith(fileExtension))
+            .map(file => path.join(prescriptionPath, file));
+        
+        // 기존 파일들을 parsedFiles에 등록 (파싱하지 않음)
+        files.forEach(filePath => {
+            parsedFiles.add(filePath);
+        });
+        
+        logMessage(`기존 파일 ${files.length}개를 등록했습니다. (파싱하지 않음)`);
+    } catch (error) {
+        logMessage(`기존 파일 등록 중 오류: ${error.message}`);
+    }
+}
+
 // 처방전 파일 파싱
 function parseAllPrescriptionFiles() {
     if (!prescriptionPath) {
@@ -2734,8 +2759,28 @@ function startPrescriptionMonitor() {
 
             files.forEach(filePath => {
                 if (!parsedFiles.has(filePath)) {
-                    const receiptNumber = path.basename(filePath, fileExtension);
-                    parsePrescriptionFile(filePath);
+                    // 파일 생성 시간 확인 (오늘 생성된 파일만 파싱)
+                    try {
+                        const stats = fs.statSync(filePath);
+                        const fileCreationTime = new Date(stats.birthtime);
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        
+                        // 오늘 생성된 파일만 파싱 (기존 파일 제외)
+                        if (fileCreationTime >= today) {
+                            const receiptNumber = path.basename(filePath, fileExtension);
+                            logMessage(`새 파일 감지: ${path.basename(filePath)} (생성시간: ${fileCreationTime.toLocaleString()})`);
+                            parsePrescriptionFile(filePath);
+                        } else {
+                            // 기존 파일은 등록만 하고 파싱하지 않음
+                            parsedFiles.add(filePath);
+                            logMessage(`기존 파일 등록: ${path.basename(filePath)} (생성시간: ${fileCreationTime.toLocaleString()})`);
+                            return;
+                        }
+                    } catch (error) {
+                        logMessage(`파일 정보 확인 실패: ${path.basename(filePath)} - ${error.message}`);
+                        return;
+                    }
                     
                     // 파일명에서 날짜 추출
                     let datePart = '';
