@@ -41,6 +41,7 @@ let pharmacyStatus = null; // 약국 승인 상태 (null, 'pending', 'active', '
  * 약국 승인 상태 확인 및 업데이트
  */
 async function checkAndUpdatePharmacyStatus() {
+    console.log('[상태 확인] 약국 상태 확인 시작...');
     try {
         const isEnrolled = await ipcRenderer.invoke('auth:is-enrolled');
         
@@ -81,6 +82,29 @@ async function checkAndUpdatePharmacyStatus() {
         pharmacyStatus = null;
     }
 }
+
+/**
+ * 상태 수동 새로고침 (개발자 도구에서 사용)
+ */
+async function refreshPharmacyStatus() {
+    const previousStatus = pharmacyStatus;
+    console.log('[수동 새로고침] 이전 상태:', previousStatus);
+    
+    await checkAndUpdatePharmacyStatus();
+    
+    console.log('[수동 새로고침] 새 상태:', pharmacyStatus);
+    
+    // 상태가 변경되었고 승인되었다면 파싱 시작
+    if (previousStatus === 'pending' && pharmacyStatus === 'active') {
+        logMessage('🎉 약국이 승인되었습니다! 파싱 기능이 활성화됩니다.');
+        parseAllPrescriptionFiles();
+    }
+    
+    return pharmacyStatus;
+}
+
+// 글로벌로 노출 (개발자 도구에서 사용 가능)
+window.refreshPharmacyStatus = refreshPharmacyStatus;
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
@@ -1516,7 +1540,12 @@ function parseAllPrescriptionFiles() {
         return;
     }
     
-    // 약국 승인 상태 확인
+    // 약국 등록 및 승인 상태 확인
+    if (pharmacyStatus === null) {
+        logMessage('⚠️ 약국 등록이 필요합니다. 등록 후 파싱 기능을 사용할 수 있습니다.');
+        return;
+    }
+    
     if (pharmacyStatus === 'pending') {
         logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
         return;
@@ -1562,7 +1591,12 @@ function parsePrescriptionFile(filePath) {
     // 디버깅: 현재 상태 확인
     console.log(`[파싱 체크] pharmacyStatus: ${pharmacyStatus}, 파일: ${path.basename(filePath)}`);
     
-    // 약국 승인 상태 확인 - pending이면 파싱 차단
+    // 약국 등록 및 승인 상태 확인
+    if (pharmacyStatus === null) {
+        logMessage(`⚠️ 약국 등록이 필요합니다. 파일 '${path.basename(filePath)}'은 등록 후 파싱됩니다.`);
+        return;
+    }
+    
     if (pharmacyStatus === 'pending') {
         logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 파싱됩니다.`);
         return;
@@ -2672,7 +2706,12 @@ function startPrescriptionMonitor() {
 
     setInterval(() => {
         try {
-            // 약국 승인 상태 확인
+            // 약국 등록 및 승인 상태 확인
+            if (pharmacyStatus === null) {
+                // 미등록 상태에서는 파싱 안 함
+                return;
+            }
+            
             if (pharmacyStatus === 'pending') {
                 // pending 상태에서는 파싱 안 함
                 return;
