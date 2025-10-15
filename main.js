@@ -525,16 +525,28 @@ app.on('before-quit', async (event) => {
       console.log('🔄 앱 종료 중 - 이벤트 전송 및 로그 저장 시작...');
       
       // 새 파일 카운트 확인
-      const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
-      console.log(`📊 새 파일 카운트: ${count}`);
+      try {
+        const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
+        console.log(`📊 새 파일 카운트: ${count}`);
+      } catch (countError) {
+        console.error('❌ 새 파일 카운트 확인 실패:', countError);
+      }
       
       // 로그 파일 저장
-      const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
-      console.log(`✅ 로그 파일 저장 완료: ${logPath}`);
+      try {
+        const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
+        console.log(`✅ 로그 파일 저장 완료: ${logPath}`);
+      } catch (logError) {
+        console.error('❌ 로그 파일 저장 실패:', logError);
+      }
       
       // 이벤트 전송
-      await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
-      console.log('✅ 이벤트 전송 완료');
+      try {
+        await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
+        console.log('✅ 이벤트 전송 완료');
+      } catch (eventError) {
+        console.error('❌ 이벤트 전송 실패:', eventError);
+      }
       
       // 2초 대기 후 종료
       setTimeout(() => {
