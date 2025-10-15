@@ -530,8 +530,8 @@ app.whenReady().then(async () => {
   }
   
   // 안전한 파싱 이벤트 시스템 초기화
-  await flushOnStart(); // 미전송분 재전송
-  startAutoFlush(); // 주기적 전송 시작
+  await flushOnStart(); // 미전송분 확인 (전송하지 않음)
+  startAutoFlush(); // 주기적 전송 비활성화
 });
 
 // ============================================
@@ -616,46 +616,24 @@ function sendCountToServer(count) {
   });
 }
 
-// 3) 주기적 전송 (60초마다) - 크래시/OS 셧다운 대비
+// 3) 주기적 전송 비활성화 (서버 사용량 절약)
 let flushTimer = null;
 function startAutoFlush() {
-  stopAutoFlush();
-  flushTimer = setInterval(async () => {
-    const c = readCounter();
-    if (c > 0) {
-      try {
-        console.log(`[AUTO-FLUSH] Sending ${c} events...`);
-        await sendCountToServer(c);
-        resetCounter();
-        console.log('[AUTO-FLUSH] Success');
-      } catch (e) {
-        console.error('[AUTO-FLUSH] Failed:', e.message);
-        // 네트워크 불가 시 다음 주기에 재시도
-      }
-    }
-  }, 60_000);
+  // 주기적 전송 비활성화 - 종료 시에만 전송
+  console.log('[AUTO-FLUSH] Periodic transmission disabled - will only send on app exit');
 }
 
 function stopAutoFlush() {
-  if (flushTimer) {
-    clearInterval(flushTimer);
-    flushTimer = null;
-  }
+  // 타이머가 없으므로 아무것도 하지 않음
 }
 
-// 4) 앱 시작 시 미전송분 재전송
+// 4) 앱 시작 시 미전송분 재전송 (서버 사용량 절약을 위해 비활성화)
 async function flushOnStart() {
   const c = readCounter();
   if (c > 0) {
-    try {
-      console.log(`[STARTUP] Sending ${c} pending events...`);
-      await sendCountToServer(c);
-      resetCounter();
-      console.log('[STARTUP] Success');
-    } catch (e) {
-      console.error('[STARTUP] Failed:', e.message);
-      // 시작 시 실패 → 주기 전송에 맡김
-    }
+    console.log(`[STARTUP] Found ${c} pending events - will send on app exit`);
+    // 서버 사용량 절약을 위해 시작 시 전송하지 않음
+    // 종료 시에만 전송
   }
 }
 
