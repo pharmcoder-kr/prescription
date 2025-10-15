@@ -31,6 +31,54 @@ let isAutoDispensingInProgress = false; // 자동조제 진행 중 플래그 (�
 let connectionCheckIntervalMs = 15000; // 연결 상태 확인 주기 (기본값: 15초)
 let prescriptionProgram = 'pm3000'; // 처방조제프로그램 (기본값: PM3000)
 let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 방지)
+let pharmacyStatus = null; // 약국 승인 상태 (null, 'pending', 'active', 'rejected')
+
+// ============================================
+// 약국 승인 상태 확인
+// ============================================
+
+/**
+ * 약국 승인 상태 확인 및 업데이트
+ */
+async function checkAndUpdatePharmacyStatus() {
+    try {
+        const isEnrolled = await ipcRenderer.invoke('auth:is-enrolled');
+        
+        if (!isEnrolled) {
+            pharmacyStatus = null;
+            logMessage('⚠️ 약국이 등록되지 않았습니다.');
+            return;
+        }
+        
+        // 토큰을 통해 상태 확인
+        const token = await ipcRenderer.invoke('auth:get-token');
+        if (!token) {
+            pharmacyStatus = null;
+            return;
+        }
+        
+        // 상태 파일 읽기
+        const userDataPath = await ipcRenderer.invoke('get-user-data-path');
+        const statusFilePath = path.join(userDataPath, 'pharmacy-status.txt');
+        
+        if (fs.existsSync(statusFilePath)) {
+            pharmacyStatus = fs.readFileSync(statusFilePath, 'utf8').trim();
+            
+            if (pharmacyStatus === 'pending') {
+                logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
+            } else if (pharmacyStatus === 'active') {
+                logMessage('✅ 약국 승인 완료 - 모든 기능 사용 가능');
+            } else if (pharmacyStatus === 'rejected') {
+                logMessage('❌ 약국 등록이 거부되었습니다.');
+            }
+        } else {
+            pharmacyStatus = null;
+        }
+    } catch (error) {
+        console.error('약국 상태 확인 중 오류:', error);
+        pharmacyStatus = null;
+    }
+}
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
@@ -230,6 +278,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 // 앱 초기화
 async function initializeApp() {
     logMessage('시럽조제기 연결 관리자가 시작되었습니다.');
+    
+    // 약국 승인 상태 확인
+    await checkAndUpdatePharmacyStatus();
+    
     await loadPrescriptionPath();
     await loadConnections(); // 저장된 연결 정보 로드
     await loadTransmissionStatus(); // 전송상태 로드 추가
@@ -237,6 +289,18 @@ async function initializeApp() {
     await loadPrescriptionProgramSettings(); // 처방조제프로그램 설정 로드 추가
     logMessage(`로드된 처방전 경로: ${prescriptionPath}`);
     initializeEmptyTables();
+    
+    // 약국 상태 주기적 확인 (5분마다)
+    setInterval(async () => {
+        const previousStatus = pharmacyStatus;
+        await checkAndUpdatePharmacyStatus();
+        
+        // 상태가 변경되었고 승인되었다면 파싱 시작
+        if (previousStatus === 'pending' && pharmacyStatus === 'active') {
+            logMessage('🎉 약국이 승인되었습니다! 파싱 기능이 활성화됩니다.');
+            parseAllPrescriptionFiles();
+        }
+    }, 5 * 60 * 1000); // 5분마다
     detectNetworks();
     parseAllPrescriptionFiles();
     startPrescriptionMonitor();
@@ -1450,6 +1514,17 @@ function parseAllPrescriptionFiles() {
         return;
     }
     
+    // 약국 승인 상태 확인
+    if (pharmacyStatus === 'pending') {
+        logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
+        return;
+    }
+    
+    if (pharmacyStatus === 'rejected') {
+        logMessage('❌ 약국 등록이 거부되었습니다. 관리자에게 문의하세요.');
+        return;
+    }
+    
     logMessage(`처방전 파일 파싱 시작: ${prescriptionPath}`);
     
     try {
@@ -1481,6 +1556,17 @@ function parseAllPrescriptionFiles() {
 
 function parsePrescriptionFile(filePath) {
     if (parsedFiles.has(filePath)) return;
+    
+    // 약국 승인 상태 확인 - pending이면 파싱 차단
+    if (pharmacyStatus === 'pending') {
+        logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 파싱됩니다.`);
+        return;
+    }
+    
+    if (pharmacyStatus === 'rejected') {
+        logMessage(`❌ 약국 등록이 거부되었습니다. 파싱 기능을 사용할 수 없습니다.`);
+        return;
+    }
     
     try {
         const buffer = fs.readFileSync(filePath);
