@@ -1775,24 +1775,17 @@ function parseAllPrescriptionFiles() {
             .map(file => path.join(prescriptionPath, file));
         
         logMessage(`발견된 파일 수: ${files.length}`);
-        files.forEach(file => {
-            logMessage(`파일: ${path.basename(file)}`);
+        
+        // 프로그램 시작 시에는 모든 파일을 파싱하여 리스트에 표시 (이벤트 전송 없음)
+        // parsedFiles를 임시로 모든 파일로 채워서 queueParseEvent가 호출되지 않도록 함
+        const originalParsedFiles = new Set(parsedFiles); // 기존 parsedFiles 백업
+        files.forEach(f => parsedFiles.add(f)); // 모든 파일을 parsedFiles에 추가 (이벤트 큐 방지)
+        
+        files.forEach(filePath => {
+            parsePrescriptionFile(filePath); // 파싱만 수행, 이벤트 큐에는 추가 안 됨
         });
         
-        console.log(`🔄 파싱 시작: ${files.length}개 파일, 프로그램: ${prescriptionProgram}`);
-        files.forEach(filePath => {
-            console.log(`🔄 forEach 루프: ${path.basename(filePath)}`);
-            // 프로그램 시작 시에는 parsedFiles 체크 없이 파싱 (리스트 표시용, 이벤트 전송 없음)
-            if (prescriptionProgram === 'pm3000') {
-                console.log(`✅ PM3000 파싱 호출: ${path.basename(filePath)}`);
-                parsePrescriptionFileWithoutEvent(filePath);
-            } else {
-                console.log(`✅ 유팜 파싱 호출: ${path.basename(filePath)}`);
-                // 유팜은 parsePrescriptionFile 사용 (이벤트 전송은 새 파일만)
-                parsePrescriptionFileWithoutEvent(filePath);
-            }
-        });
-        console.log(`🔄 파싱 완료: ${Object.keys(parsedPrescriptions).length}개 처방전`);
+        parsedFiles = originalParsedFiles; // 원래 parsedFiles 복원
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
         Object.keys(parsedPrescriptions).forEach(key => {
