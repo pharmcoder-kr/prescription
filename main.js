@@ -507,6 +507,37 @@ app.whenReady().then(async () => {
 });
 
 // 모든 윈도우가 닫히면 앱 종료
+// 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
+let isQuitting = false;
+app.on('before-quit', async (event) => {
+  if (isQuitting) return; // 이미 종료 중이면 스킵
+  
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault(); // 종료 잠시 중단
+    isQuitting = true;
+    
+    try {
+      console.log('🔄 앱 종료 중 - 이벤트 전송 및 로그 저장 시작...');
+      
+      // 로그 파일 저장
+      await mainWindow.webContents.executeJavaScript('saveLogToFile()');
+      console.log('✅ 로그 파일 저장 완료');
+      
+      // 이벤트 전송
+      await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
+      console.log('✅ 이벤트 전송 완료');
+      
+      // 1초 대기 후 종료
+      setTimeout(() => {
+        app.exit(0);
+      }, 1000);
+    } catch (error) {
+      console.error('❌ 종료 전 작업 실패:', error);
+      app.exit(0);
+    }
+  }
+});
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();

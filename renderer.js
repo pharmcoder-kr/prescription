@@ -459,18 +459,8 @@ function saveLogToFile() {
 }
 
 // 앱 종료 시 남은 이벤트 전송 및 로그 저장
-window.addEventListener('beforeunload', async () => {
-    // 로그 파일 저장
-    const logPath = saveLogToFile();
-    
-    // 이벤트 전송
-    await sendAllPendingEvents();
-    
-    // 로그 저장 경로 출력
-    if (logPath) {
-        console.log(`📄 앱 종료 로그 저장됨: ${logPath}`);
-    }
-});
+// beforeunload는 main.js의 before-quit에서 처리
+// window.addEventListener('beforeunload', ...) 제거
 
 // 앱 초기화
 async function initializeApp() {
