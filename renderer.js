@@ -107,6 +107,18 @@ async function refreshPharmacyStatus() {
 window.refreshPharmacyStatus = refreshPharmacyStatus;
 window.sendAllPendingEvents = sendAllPendingEvents; // 수동 전송 기능
 window.getPendingEventsCount = () => parseEventQueue.length; // 대기 중인 이벤트 수 확인
+window.testQueueEvent = (fileName) => {
+    // 테스트용 함수 - 특정 파일명으로 큐 이벤트 테스트
+    const testPath = path.join(prescriptionPath, fileName);
+    console.log(`🧪 테스트: ${fileName} 큐 이벤트 추가`);
+    queueParseEvent(testPath);
+};
+window.showQueueStatus = () => {
+    console.log(`📊 큐 상태: ${parseEventQueue.length}개 대기 중`);
+    parseEventQueue.forEach((event, index) => {
+        console.log(`  ${index + 1}. ${path.basename(event.filePath)} - ${event.ts}`);
+    });
+};
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
@@ -142,17 +154,22 @@ function isFileCreatedToday(filePath) {
  * @param {string} filePath - 파싱한 파일 경로
  */
 function queueParseEvent(filePath) {
+    console.log(`🔍 queueParseEvent 호출됨: ${path.basename(filePath)}`);
+    
     try {
         // 중복 키 생성 (device_uid + 파일경로 + 수정시간)
         const stats = fs.statSync(filePath);
         const mtime = stats.mtimeMs;
         const deviceUid = getDeviceUidSync(); // 동기 방식으로 읽기
         
+        console.log(`📊 파일 정보 - UID: ${deviceUid}, mtime: ${mtime}`);
+        
         const idempotencyKey = `${deviceUid}_${filePath}_${mtime}`;
+        console.log(`🔑 idempotencyKey 생성: ${idempotencyKey}`);
         
         // 이미 큐에 있는지 확인
         if (parseEventQueue.some(event => event.idempotency_key === idempotencyKey)) {
-            console.log('이미 큐에 있는 이벤트:', path.basename(filePath));
+            console.log('⚠️ 이미 큐에 있는 이벤트:', path.basename(filePath));
             return;
         }
         
@@ -166,10 +183,11 @@ function queueParseEvent(filePath) {
         
         // 큐에 추가
         parseEventQueue.push(eventData);
-        console.log(`📝 파싱 이벤트 큐에 추가: ${path.basename(filePath)} (총 ${parseEventQueue.length}개 대기 중)`);
+        console.log(`✅ 파싱 이벤트 큐에 추가: ${path.basename(filePath)} (총 ${parseEventQueue.length}개 대기 중)`);
         
     } catch (error) {
-        console.error('파싱 이벤트 큐 추가 중 오류:', error);
+        console.error('❌ 파싱 이벤트 큐 추가 중 오류:', error);
+        console.error('오류 상세:', error.stack);
     }
 }
 
@@ -411,9 +429,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-// 앱 종료 시 남은 이벤트 전송
+// 로그를 파일로 저장하는 함수
+function saveLogToFile() {
+    try {
+        const logContent = document.getElementById('log').textContent;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const logFileName = `app-log-${timestamp}.txt`;
+        
+        // 간단한 파일 저장 (Electron의 dialog 사용)
+        const fs = require('fs');
+        const path = require('path');
+        const os = require('os');
+        
+        const logPath = path.join(os.homedir(), 'Desktop', logFileName);
+        fs.writeFileSync(logPath, logContent);
+        
+        console.log(`📄 로그 파일 저장됨: ${logPath}`);
+        return logPath;
+    } catch (error) {
+        console.error('로그 파일 저장 실패:', error);
+        return null;
+    }
+}
+
+// 앱 종료 시 남은 이벤트 전송 및 로그 저장
 window.addEventListener('beforeunload', async () => {
+    // 로그 파일 저장
+    const logPath = saveLogToFile();
+    
+    // 이벤트 전송
     await sendAllPendingEvents();
+    
+    // 로그 저장 경로 출력
+    if (logPath) {
+        console.log(`📄 앱 종료 로그 저장됨: ${logPath}`);
+    }
 });
 
 // 앱 초기화
