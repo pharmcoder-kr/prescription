@@ -446,21 +446,13 @@ function saveLogToFile() {
         const path = require('path');
         const os = require('os');
         
-        // OneDrive 바탕화면에 저장
-        const desktopPath = path.join(os.homedir(), 'OneDrive', 'Desktop');
-        
-        // OneDrive 바탕화면이 없으면 일반 바탕화면 사용
-        let logPath;
-        if (fs.existsSync(desktopPath)) {
-            logPath = path.join(desktopPath, logFileName);
-        } else {
-            // AppData 폴더에 저장 (백업)
-            const appDataPath = path.join(os.homedir(), 'AppData', 'Roaming', 'auto-syrup');
-            if (!fs.existsSync(appDataPath)) {
-                fs.mkdirSync(appDataPath, { recursive: true });
-            }
-            logPath = path.join(appDataPath, logFileName);
+        // AppData 폴더에 저장
+        const appDataPath = path.join(os.homedir(), 'AppData', 'Roaming', 'auto-syrup');
+        if (!fs.existsSync(appDataPath)) {
+            fs.mkdirSync(appDataPath, { recursive: true });
         }
+        
+        const logPath = path.join(appDataPath, logFileName);
         fs.writeFileSync(logPath, logContent, 'utf8');
         
         console.log(`📄 로그 파일 저장됨: ${logPath}`);
