@@ -71,6 +71,8 @@ async function sendParseEvent(filePath) {
             // 토큰이 없는 경우는 로그만 남기고 진행
             if (result.error === 'no_token') {
                 console.log('⚠️ 약국 등록이 필요합니다. 파싱 이벤트가 전송되지 않습니다.');
+            } else if (result.error && result.error.includes('승인')) {
+                console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
             } else {
                 console.warn('⚠️ 파싱 이벤트 전송 실패:', result.error);
             }

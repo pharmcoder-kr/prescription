@@ -210,15 +210,23 @@ async function checkPharmacyStatus() {
   }
 }
 
-// 승인 대기 메시지 표시
-function showPendingMessage() {
+// 승인 대기 알림 (비차단식)
+function showPendingNotification() {
+  if (!mainWindow) return;
+  
   dialog.showMessageBox(mainWindow, {
     type: 'info',
-    title: '승인 대기',
-    message: '약국 등록이 완료되었습니다.',
-    detail: '관리자 승인 후 사용 가능합니다. 승인까지 시간이 걸릴 수 있습니다.',
-    buttons: ['확인']
+    title: '알림',
+    message: '약국 승인 대기 중',
+    detail: '등록이 완료되었습니다. 관리자 승인 후 파싱 이벤트가 전송됩니다.\n\n프로그램은 정상적으로 사용 가능합니다.',
+    buttons: ['확인'],
+    noLink: true
   });
+}
+
+// 승인 대기 메시지 표시 (구버전 - 호환성 유지)
+function showPendingMessage() {
+  showPendingNotification();
 }
 
 // 거부 메시지 표시
@@ -396,33 +404,38 @@ app.whenReady().then(async () => {
   // 메인 윈도우 생성
   createWindow();
   
-          // 토큰이 없으면 등록 창 표시
-          if (!token) {
-            console.log('⚠️ 토큰이 없습니다. 등록 창을 표시합니다.');
-            setTimeout(() => {
-              createEnrollWindow();
-            }, 1000);
-          } else {
-            // 토큰 검증
-            const isValid = await verifyToken();
-            if (!isValid) {
-              console.log('⚠️ 토큰이 유효하지 않습니다. 등록 창을 표시합니다.');
-              await deleteToken();
-              createEnrollWindow();
-            } else {
-              // 약국 상태 확인
-              const status = await checkPharmacyStatus();
-              if (status === 'pending') {
-                console.log('⚠️ 약국 승인 대기 중입니다.');
-                showPendingMessage();
-              } else if (status === 'rejected') {
-                console.log('⚠️ 약국 등록이 거부되었습니다.');
-                showRejectedMessage();
-              } else {
-                console.log('✅ 인증 완료');
-              }
-            }
-          }
+  // 토큰이 없으면 등록 창 표시
+  if (!token) {
+    console.log('⚠️ 토큰이 없습니다. 등록 창을 표시합니다.');
+    setTimeout(() => {
+      createEnrollWindow();
+    }, 1000);
+  } else {
+    // 토큰 검증
+    const isValid = await verifyToken();
+    if (!isValid) {
+      console.log('⚠️ 토큰이 유효하지 않습니다. 등록 창을 표시합니다.');
+      await deleteToken();
+      createEnrollWindow();
+    } else {
+      // 약국 상태 확인
+      const status = await checkPharmacyStatus();
+      console.log('✅ 인증 완료 - 상태:', status);
+      
+      if (status === 'pending') {
+        console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
+        // pending 상태여도 앱은 정상 사용 가능 (등록 창 표시 안 함)
+        setTimeout(() => {
+          showPendingNotification();
+        }, 2000);
+      } else if (status === 'rejected') {
+        console.log('⚠️ 약국 등록이 거부되었습니다.');
+        showRejectedMessage();
+      } else if (status === 'active') {
+        console.log('✅ 약국 승인 완료 - 정상 사용 가능');
+      }
+    }
+  }
   
   // 앱 시작 5초 후 업데이트 확인 (패키징된 앱에서만)
   if (app.isPackaged) {
@@ -613,6 +626,12 @@ ipcMain.handle('api:send-parse-event', async (event, eventData) => {
     let errorMessage = '이벤트 전송 실패';
     if (error.response) {
       errorMessage = error.response.data?.error || errorMessage;
+      
+      // 403 오류 (승인 대기)는 조용히 처리
+      if (error.response.status === 403) {
+        console.log('⚠️ 약국 승인 대기 중 - 파싱 이벤트가 전송되지 않습니다.');
+        errorMessage = error.response.data?.error || '관리자 승인이 필요합니다.';
+      }
     }
     
     return { success: false, error: errorMessage };
