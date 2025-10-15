@@ -442,18 +442,25 @@ function saveLogToFile() {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const logFileName = `app-log-${timestamp}.txt`;
         
-        // 간단한 파일 저장 (Electron의 dialog 사용)
         const fs = require('fs');
         const path = require('path');
         const os = require('os');
         
-        const logPath = path.join(os.homedir(), 'Desktop', logFileName);
-        fs.writeFileSync(logPath, logContent);
+        // AppData 폴더에 저장 (더 안전함)
+        const appDataPath = path.join(os.homedir(), 'AppData', 'Roaming', 'auto-syrup');
+        if (!fs.existsSync(appDataPath)) {
+            fs.mkdirSync(appDataPath, { recursive: true });
+        }
+        
+        const logPath = path.join(appDataPath, logFileName);
+        fs.writeFileSync(logPath, logContent, 'utf8');
         
         console.log(`📄 로그 파일 저장됨: ${logPath}`);
+        logMessage(`📄 로그 파일 저장됨: ${logPath}`);
         return logPath;
     } catch (error) {
         console.error('로그 파일 저장 실패:', error);
+        logMessage(`❌ 로그 파일 저장 실패: ${error.message}`);
         return null;
     }
 }

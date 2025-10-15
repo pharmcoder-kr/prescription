@@ -510,7 +510,12 @@ app.whenReady().then(async () => {
 // 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
 let isQuitting = false;
 app.on('before-quit', async (event) => {
-  if (isQuitting) return; // 이미 종료 중이면 스킵
+  console.log('🔔 before-quit 이벤트 발생');
+  
+  if (isQuitting) {
+    console.log('⏭️ 이미 종료 처리 중...');
+    return;
+  }
   
   if (mainWindow && !mainWindow.isDestroyed()) {
     event.preventDefault(); // 종료 잠시 중단
@@ -519,20 +524,26 @@ app.on('before-quit', async (event) => {
     try {
       console.log('🔄 앱 종료 중 - 이벤트 전송 및 로그 저장 시작...');
       
+      // 새 파일 카운트 확인
+      const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
+      console.log(`📊 새 파일 카운트: ${count}`);
+      
       // 로그 파일 저장
-      await mainWindow.webContents.executeJavaScript('saveLogToFile()');
-      console.log('✅ 로그 파일 저장 완료');
+      const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
+      console.log(`✅ 로그 파일 저장 완료: ${logPath}`);
       
       // 이벤트 전송
       await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
       console.log('✅ 이벤트 전송 완료');
       
-      // 1초 대기 후 종료
+      // 2초 대기 후 종료
       setTimeout(() => {
+        console.log('👋 앱 종료');
         app.exit(0);
-      }, 1000);
+      }, 2000);
     } catch (error) {
       console.error('❌ 종료 전 작업 실패:', error);
+      console.error('오류 상세:', error.stack);
       app.exit(0);
     }
   }
