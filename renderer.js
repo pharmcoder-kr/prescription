@@ -63,6 +63,7 @@ async function checkAndUpdatePharmacyStatus() {
         
         if (fs.existsSync(statusFilePath)) {
             pharmacyStatus = fs.readFileSync(statusFilePath, 'utf8').trim();
+            console.log(`[상태 확인] pharmacyStatus 설정됨: ${pharmacyStatus}`);
             
             if (pharmacyStatus === 'pending') {
                 logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
@@ -73,6 +74,7 @@ async function checkAndUpdatePharmacyStatus() {
             }
         } else {
             pharmacyStatus = null;
+            console.log('[상태 확인] pharmacy-status.txt 파일 없음 - pharmacyStatus = null');
         }
     } catch (error) {
         console.error('약국 상태 확인 중 오류:', error);
@@ -1557,6 +1559,9 @@ function parseAllPrescriptionFiles() {
 function parsePrescriptionFile(filePath) {
     if (parsedFiles.has(filePath)) return;
     
+    // 디버깅: 현재 상태 확인
+    console.log(`[파싱 체크] pharmacyStatus: ${pharmacyStatus}, 파일: ${path.basename(filePath)}`);
+    
     // 약국 승인 상태 확인 - pending이면 파싱 차단
     if (pharmacyStatus === 'pending') {
         logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 파싱됩니다.`);
@@ -2667,6 +2672,17 @@ function startPrescriptionMonitor() {
 
     setInterval(() => {
         try {
+            // 약국 승인 상태 확인
+            if (pharmacyStatus === 'pending') {
+                // pending 상태에서는 파싱 안 함
+                return;
+            }
+            
+            if (pharmacyStatus === 'rejected') {
+                // rejected 상태에서는 파싱 안 함
+                return;
+            }
+            
             // 선택된 프로그램에 따라 파일 확장자 결정
             const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
             const files = fs.readdirSync(prescriptionPath)
