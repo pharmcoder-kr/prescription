@@ -1780,8 +1780,13 @@ function parseAllPrescriptionFiles() {
         });
         
         files.forEach(filePath => {
-            // 프로그램 시작 시에는 파싱만 하고 이벤트 전송 안 함
-            parsePrescriptionFileWithoutEvent(filePath);
+            // 프로그램 시작 시에는 parsedFiles 체크 없이 파싱 (리스트 표시용, 이벤트 전송 없음)
+            if (prescriptionProgram === 'pm3000') {
+                parsePrescriptionFileWithoutEvent(filePath);
+            } else {
+                // 유팜은 parsePrescriptionFile 사용 (이벤트 전송은 새 파일만)
+                parsePrescriptionFileWithoutEvent(filePath);
+            }
         });
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
@@ -1800,17 +1805,23 @@ function parseAllPrescriptionFiles() {
  */
 function parsePrescriptionFileWithoutEvent(filePath) {
     // 프로그램 시작 시에는 parsedFiles 체크 없이 항상 파싱 (리스트 표시용)
+    console.log(`🟢 parsePrescriptionFileWithoutEvent 호출: ${path.basename(filePath)}`);
     
     try {
         const buffer = fs.readFileSync(filePath);
         const content = buffer.toString('utf8');
         const lines = content.split('\n');
         
-        if (lines.length < 2) return;
+        console.log(`📄 파일 라인 수: ${lines.length}`);
+        if (lines.length < 2) {
+            console.log(`⚠️ 라인 수 부족: ${path.basename(filePath)}`);
+            return;
+        }
         
         const firstLine = lines[0].trim();
         const parts = firstLine.split('\\');
         
+        console.log(`📝 첫 줄 파트 수: ${parts.length}, 내용: ${firstLine.substring(0, 50)}`);
         if (parts.length >= 3) {
             const patientName = parts[0];
             const receiptDate = parts[1];
@@ -1846,8 +1857,11 @@ function parsePrescriptionFileWithoutEvent(filePath) {
                 medicines: medicines
             };
             
+            console.log(`✅ parsedPrescriptions에 추가: ${receiptNumber}`);
             // parsedFiles에 추가하지 않음 (리스트 표시만 하고, 새 파일 감지는 startPrescriptionMonitor에서 처리)
             // logMessage(`기존 파일 파싱 완료: ${path.basename(filePath)} (이벤트 전송 없음)`);
+        } else {
+            console.log(`❌ 파트 수 부족으로 파싱 실패: ${path.basename(filePath)}`);
         }
     } catch (error) {
         logMessage(`파일 파싱 중 오류: ${error.message}`);
