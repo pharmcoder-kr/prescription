@@ -236,30 +236,6 @@ function loadPreviousPharmacyStatus() {
   return null;
 }
 
-// 동기식 토큰 가져오기 (전송용)
-function getTokenSync() {
-  try {
-    if (fs.existsSync(TOKEN_FILE)) {
-      return fs.readFileSync(TOKEN_FILE, 'utf8').trim();
-    }
-  } catch (error) {
-    console.error('토큰 불러오기 실패:', error);
-  }
-  return null;
-}
-
-// 동기식 디바이스 UID 가져오기 (전송용)
-function getDeviceUidSync() {
-  try {
-    if (fs.existsSync(DEVICE_UID_FILE)) {
-      return fs.readFileSync(DEVICE_UID_FILE, 'utf8').trim();
-    }
-  } catch (error) {
-    console.error('디바이스 UID 불러오기 실패:', error);
-  }
-  return null;
-}
-
 // 승인 대기 알림 (비차단식)
 function showPendingNotification() {
   if (!mainWindow) return;
@@ -448,7 +424,59 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   }
 
-  // 윈도우가 닫힐 때 앱 종료
+  // 윈도우가 닫히기 전에 정리 작업 수행
+  mainWindow.on('close', async (event) => {
+    console.log('[APP] Window close event triggered');
+    
+    if (isQuitting) {
+      console.log('[APP] Already quitting, allowing close');
+      return;
+    }
+    
+    event.preventDefault(); // 윈도우 닫기 방지
+    
+    try {
+      console.log('[APP] Performing cleanup before window close...');
+      
+      // 새 파일 카운트 확인
+      try {
+        const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
+        console.log('[APP] New file count:', count);
+      } catch (countError) {
+        console.error('[APP] Failed to get file count:', countError.message);
+      }
+      
+      // 로그 파일 저장
+      try {
+        const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
+        console.log('[APP] Log file saved:', logPath);
+      } catch (logError) {
+        console.error('[APP] Failed to save log:', logError.message);
+      }
+      
+      // 이벤트 전송
+      try {
+        await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
+        console.log('[APP] Events sent successfully');
+      } catch (eventError) {
+        console.error('[APP] Failed to send events:', eventError.message);
+      }
+      
+      // 정리 완료 후 윈도우 닫기
+      isQuitting = true;
+      setTimeout(() => {
+        console.log('[APP] Cleanup completed, closing window');
+        mainWindow.destroy();
+      }, 1000);
+      
+    } catch (error) {
+      console.error('[APP] Cleanup failed:', error.message);
+      isQuitting = true;
+      mainWindow.destroy();
+    }
+  });
+
+  // 윈도우가 완전히 닫힌 후
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -528,148 +556,14 @@ app.whenReady().then(async () => {
       autoUpdater.checkForUpdates();
     }, 5000);
   }
-  
-  // 안전한 파싱 이벤트 시스템 초기화
-  await flushOnStart(); // 미전송분 확인 (전송하지 않음)
-  startAutoFlush(); // 주기적 전송 비활성화
 });
 
-// ============================================
-// 안전한 파싱 이벤트 전송 시스템
-// ============================================
-
-const { net } = require('electron');
-const DATA_FILE = path.join(app.getPath('userData'), 'parse_events.json');
-
-// 1) 안전한 로컬 저장소: 누적/로드/리셋
-function readCounter() {
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const j = JSON.parse(raw);
-    return Number.isFinite(j.count) ? j.count : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function writeCounter(count) {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ count }), 'utf8');
-}
-
-function incCounter(n = 1) {
-  const c = readCounter() + n;
-  writeCounter(c);
-  console.log(`[COUNTER] Incremented by ${n}, total: ${c}`);
-  return c;
-}
-
-function resetCounter() {
-  writeCounter(0);
-  console.log('[COUNTER] Reset to 0');
-}
-
-// 2) 전송 함수: electron.net 사용 (CORS 영향 없음, main 전용)
-function sendCountToServer(count) {
-  return new Promise((resolve, reject) => {
-    if (!count || count <= 0) return resolve({ skipped: true });
-
-    const token = getTokenSync();
-    if (!token) {
-      return reject(new Error('No authentication token'));
-    }
-
-    const url = `${API_BASE}/v1/events/parse/batch`;
-    const req = net.request({ method: 'POST', url });
-    req.setHeader('Content-Type', 'application/json');
-    req.setHeader('Authorization', `Bearer ${token}`);
-
-    req.on('response', (res) => {
-      let body = '';
-      res.on('data', (chunk) => (body += chunk));
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`[TRANSMIT] Success: ${res.statusCode}`);
-          resolve({ ok: true, status: res.statusCode, body });
-        } else {
-          console.error(`[TRANSMIT] Failed: ${res.statusCode} - ${body}`);
-          reject(new Error(`HTTP ${res.statusCode}: ${body}`));
-        }
-      });
-    });
-    req.on('error', (err) => {
-      console.error('[TRANSMIT] Network error:', err.message);
-      reject(err);
-    });
-
-    const payload = {
-      events: Array(count).fill().map((_, i) => ({
-        source: 'pharmIT3000',
-        count: 1,
-        idempotency_key: `${getDeviceUidSync()}_batch_${Date.now()}_${i}`,
-        ts: new Date().toISOString()
-      }))
-    };
-    
-    req.write(JSON.stringify(payload));
-    req.end();
-  });
-}
-
-// 3) 주기적 전송 비활성화 (서버 사용량 절약)
-let flushTimer = null;
-function startAutoFlush() {
-  // 주기적 전송 비활성화 - 종료 시에만 전송
-  console.log('[AUTO-FLUSH] Periodic transmission disabled - will only send on app exit');
-}
-
-function stopAutoFlush() {
-  // 타이머가 없으므로 아무것도 하지 않음
-}
-
-// 4) 앱 시작 시 미전송분 재전송 (서버 사용량 절약을 위해 비활성화)
-async function flushOnStart() {
-  const c = readCounter();
-  if (c > 0) {
-    console.log(`[STARTUP] Found ${c} pending events - will send on app exit`);
-    // 서버 사용량 절약을 위해 시작 시 전송하지 않음
-    // 종료 시에만 전송
-  }
-}
-
-// 5) 종료 시 전송: before-quit에서 붙잡았다가 완료 후 exit
-let quitting = false;
+// 모든 윈도우가 닫히면 앱 종료
+// 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
+let isQuitting = false;
 app.on('before-quit', (event) => {
   console.log('[APP] before-quit event triggered');
-  
-  if (quitting) return; // 중복 방지
-  
-  const c = readCounter();
-  if (c <= 0) {
-    console.log('[APP] No pending events, exiting immediately');
-    return; // 보낼 게 없으면 붙잡지 않음
-  }
-
-  event.preventDefault();
-  quitting = true;
-  console.log(`[APP] Preventing exit, sending ${c} events...`);
-
-  // 주기 타이머 정리
-  stopAutoFlush();
-
-  // 전송 시도 후 성공/실패와 무관하게 종료
-  sendCountToServer(c)
-    .then(() => {
-      resetCounter();
-      console.log('[APP] Events sent successfully, exiting');
-    })
-    .catch((err) => {
-      console.error('[APP] Failed to send events:', err.message);
-    })
-    .finally(() => {
-      // 중요: app.exit()는 before-quit 등을 다시 발생시키지 않음
-      app.exit(0);
-    });
+  // window-all-closed에서 정리 작업을 처리하므로 여기서는 아무것도 하지 않음
 });
 
 app.on('window-all-closed', () => {
@@ -822,23 +716,51 @@ ipcMain.handle('auth:logout', async () => {
   return { success: true };
 });
 
-// 파싱 카운터 증가 (렌더러에서 호출)
-ipcMain.handle('parse:increment', (event, n = 1) => {
-  return incCounter(n);
-});
-
-// 배치 파싱 이벤트 전송 (렌더러에서 호출) - 레거시 지원
+// 배치 파싱 이벤트 전송 (렌더러에서 호출)
 ipcMain.handle('api:send-batch-parse-events', async (event, eventsArray) => {
   try {
-    const count = eventsArray ? eventsArray.length : 0;
-    if (count > 0) {
-      await sendCountToServer(count);
-      resetCounter();
+    const token = await getToken();
+    if (!token) {
+      console.log('⚠️ 토큰이 없어 배치 파싱 이벤트를 전송하지 않습니다.');
+      return { success: false, error: 'no_token' };
     }
-    return { success: true };
+
+    // 배치 전송을 위한 요청 데이터 구성
+    const batchData = {
+      events: eventsArray,
+      count: eventsArray.length,
+      ts: new Date().toISOString()
+    };
+
+    const response = await axios.post(
+      `${API_BASE}/v1/events/parse/batch`,
+      batchData,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000 // 배치 전송은 시간이 더 걸릴 수 있음
+      }
+    );
+
+    console.log(`✅ 배치 파싱 이벤트 전송 성공: ${eventsArray.length}개`);
+    return { success: true, data: response.data };
   } catch (error) {
-    console.error('[LEGACY] Batch send failed:', error.message);
-    return { success: false, error: error.message };
+    console.error('❌ 배치 파싱 이벤트 전송 실패:', error);
+    
+    let errorMessage = '배치 이벤트 전송 실패';
+    if (error.response) {
+      errorMessage = error.response.data?.error || errorMessage;
+      
+      // 403 오류 (승인 대기)는 조용히 처리
+      if (error.response.status === 403) {
+        console.log('⚠️ 약국 승인 대기 중 - 배치 파싱 이벤트가 전송되지 않습니다.');
+        errorMessage = error.response.data?.error || '관리자 승인이 필요합니다.';
+      }
+    }
+    
+    return { success: false, error: errorMessage };
   }
 });
 
