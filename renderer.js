@@ -127,7 +127,10 @@ function isFileCreatedToday(filePath) {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         
-        return fileCreationTime >= today;
+        const isToday = fileCreationTime >= today;
+        console.log(`파일 생성 시간 확인: ${path.basename(filePath)} - 생성시간: ${fileCreationTime.toLocaleString()}, 오늘: ${isToday}`);
+        
+        return isToday;
     } catch (error) {
         console.error(`파일 생성 시간 확인 실패: ${path.basename(filePath)} - ${error.message}`);
         return false;
@@ -1684,7 +1687,8 @@ function parseAllPrescriptionFiles() {
         });
         
         files.forEach(filePath => {
-            parsePrescriptionFile(filePath);
+            // 프로그램 시작 시에는 파싱만 하고 이벤트 전송 안 함
+            parsePrescriptionFileWithoutEvent(filePath);
         });
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
@@ -1695,6 +1699,65 @@ function parseAllPrescriptionFiles() {
         filterPatientsByDate();
     } catch (error) {
         logMessage(`처방전 파일 파싱 중 오류: ${error.message}`);
+    }
+}
+
+/**
+ * 이벤트 전송 없이 파일 파싱만 (프로그램 시작 시 사용)
+ */
+function parsePrescriptionFileWithoutEvent(filePath) {
+    if (parsedFiles.has(filePath)) return;
+    
+    try {
+        const buffer = fs.readFileSync(filePath);
+        const content = buffer.toString('utf8');
+        const lines = content.split('\n');
+        
+        if (lines.length < 2) return;
+        
+        const firstLine = lines[0].trim();
+        const parts = firstLine.split('\\');
+        
+        if (parts.length >= 3) {
+            const patientName = parts[0];
+            const receiptDate = parts[1];
+            const receiptNumber = parts[2];
+            
+            const medicines = lines.slice(1).map((line, index) => {
+                const parts = line.trim().split('\\');
+                if (parts.length >= 8) {
+                    return {
+                        pill_code: parts[0],
+                        pill_name: parts[1],
+                        volume: parseInt(parts[2]),
+                        daily: parseInt(parts[3]),
+                        period: parseInt(parts[4]),
+                        total: parseInt(parts[5]),
+                        date: parts[6],
+                        line_number: parseInt(parts[7])
+                    };
+                }
+                return null;
+            }).filter(medicine => medicine !== null);
+            
+            medicines.sort((a, b) => a.line_number - b.line_number);
+            
+            parsedPrescriptions[receiptNumber] = {
+                patient: {
+                    name: patientName,
+                    receipt_time: receiptDate,
+                    receipt_date: receiptDate,
+                    receipt_number: receiptNumber,
+                    parsed_at: moment().format('YYYY-MM-DD HH:mm:ss')
+                },
+                medicines: medicines
+            };
+            
+            parsedFiles.add(filePath);
+            logMessage(`기존 파일 파싱 완료: ${path.basename(filePath)} (이벤트 전송 없음)`);
+        }
+    } catch (error) {
+        logMessage(`파일 파싱 중 오류: ${error.message}`);
     }
 }
 
@@ -1803,12 +1866,8 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
-            // 파싱 이벤트 큐에 추가 (오늘 생성된 파일만)
-            if (isFileCreatedToday(filePath)) {
-                queueParseEvent(filePath);
-            } else {
-                console.log(`기존 파일 파싱 완료 (이벤트 전송 제외): ${path.basename(filePath)}`);
-            }
+            // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
+            queueParseEvent(filePath);
             
         } else {
             // 유팜 - XML 파일 파싱
@@ -1902,12 +1961,8 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
-            // 파싱 이벤트 큐에 추가 (오늘 생성된 파일만)
-            if (isFileCreatedToday(filePath)) {
-                queueParseEvent(filePath);
-            } else {
-                console.log(`기존 파일 파싱 완료 (이벤트 전송 제외): ${path.basename(filePath)}`);
-            }
+            // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
+            queueParseEvent(filePath);
         }
         
         // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경
