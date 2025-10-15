@@ -194,6 +194,11 @@ function isFileCreatedToday(filePath) {
  * @param {string} filePath - 파싱한 파일 경로
  */
 function queueParseEvent(filePath) {
+    // parseEventQueue가 null이면 무시 (프로그램 시작 시 초기 파싱 중)
+    if (parseEventQueue === null) {
+        return;
+    }
+    
     console.log(`🔍 queueParseEvent 호출됨: ${path.basename(filePath)}`);
     
     try {
@@ -1777,15 +1782,17 @@ function parseAllPrescriptionFiles() {
         logMessage(`발견된 파일 수: ${files.length}`);
         
         // 프로그램 시작 시에는 모든 파일을 파싱하여 리스트에 표시 (이벤트 전송 없음)
-        // parsedFiles를 임시로 모든 파일로 채워서 queueParseEvent가 호출되지 않도록 함
-        const originalParsedFiles = new Set(parsedFiles); // 기존 parsedFiles 백업
-        files.forEach(f => parsedFiles.add(f)); // 모든 파일을 parsedFiles에 추가 (이벤트 큐 방지)
+        // 임시로 parseEventQueue를 비활성화하여 이벤트 큐에 추가되지 않도록 함
+        const originalQueue = parseEventQueue;
+        parseEventQueue = null; // queueParseEvent가 호출되어도 무시되도록
         
         files.forEach(filePath => {
-            parsePrescriptionFile(filePath); // 파싱만 수행, 이벤트 큐에는 추가 안 됨
+            // parsedFiles 체크를 우회하기 위해 임시로 제거
+            parsedFiles.delete(filePath);
+            parsePrescriptionFile(filePath); // 파싱 수행
         });
         
-        parsedFiles = originalParsedFiles; // 원래 parsedFiles 복원
+        parseEventQueue = originalQueue; // 원래 큐 복원
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
         Object.keys(parsedPrescriptions).forEach(key => {
