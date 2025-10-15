@@ -2969,7 +2969,7 @@ function startPrescriptionMonitor() {
                 if (!parsedFiles.has(filePath)) {
                     const receiptNumber = path.basename(filePath, fileExtension);
                     logMessage(`새 파일 감지: ${path.basename(filePath)}`);
-                    parsePrescriptionFile(filePath);
+                    parsePrescriptionFileWithoutEvent(filePath);
                     
                     // 파일명에서 날짜 추출
                     let datePart = '';
