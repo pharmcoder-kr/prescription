@@ -510,54 +510,71 @@ app.whenReady().then(async () => {
 // 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
 let isQuitting = false;
 app.on('before-quit', async (event) => {
-  console.log('🔔 before-quit 이벤트 발생');
+  console.log('[APP] before-quit event triggered');
   
   if (isQuitting) {
-    console.log('⏭️ 이미 종료 처리 중...');
+    console.log('[APP] Already quitting, skipping...');
     return;
   }
   
   if (mainWindow && !mainWindow.isDestroyed()) {
-    event.preventDefault(); // 종료 잠시 중단
+    event.preventDefault(); // Prevent immediate exit
     isQuitting = true;
     
     try {
-      console.log('🔄 앱 종료 중 - 이벤트 전송 및 로그 저장 시작...');
+      console.log('[APP] Starting cleanup process...');
+      
+      // Check if renderer is ready
+      console.log('[APP] Checking renderer process...');
+      const isReady = await mainWindow.webContents.executeJavaScript('typeof window !== "undefined"');
+      console.log('[APP] Renderer ready:', isReady);
+      
+      if (!isReady) {
+        console.log('[APP] Renderer not ready, skipping cleanup');
+        app.exit(0);
+        return;
+      }
       
       // 새 파일 카운트 확인
       try {
+        console.log('[APP] Getting new file count...');
         const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
-        console.log(`📊 새 파일 카운트: ${count}`);
+        console.log('[APP] New file count:', count);
       } catch (countError) {
-        console.error('❌ 새 파일 카운트 확인 실패:', countError);
+        console.error('[APP] Failed to get file count:', countError.message);
       }
       
       // 로그 파일 저장
       try {
+        console.log('[APP] Saving log file...');
         const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
-        console.log(`✅ 로그 파일 저장 완료: ${logPath}`);
+        console.log('[APP] Log file saved:', logPath);
       } catch (logError) {
-        console.error('❌ 로그 파일 저장 실패:', logError);
+        console.error('[APP] Failed to save log:', logError.message);
       }
       
       // 이벤트 전송
       try {
+        console.log('[APP] Sending events...');
         await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
-        console.log('✅ 이벤트 전송 완료');
+        console.log('[APP] Events sent successfully');
       } catch (eventError) {
-        console.error('❌ 이벤트 전송 실패:', eventError);
+        console.error('[APP] Failed to send events:', eventError.message);
       }
       
       // 2초 대기 후 종료
       setTimeout(() => {
-        console.log('👋 앱 종료');
+        console.log('[APP] Exiting application');
         app.exit(0);
       }, 2000);
     } catch (error) {
-      console.error('❌ 종료 전 작업 실패:', error);
-      console.error('오류 상세:', error.stack);
+      console.error('[APP] Cleanup failed:', error.message);
+      console.error('[APP] Error stack:', error.stack);
       app.exit(0);
     }
+  } else {
+    console.log('[APP] Main window not available, exiting immediately');
+    app.exit(0);
   }
 });
 

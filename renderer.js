@@ -108,6 +108,7 @@ window.refreshPharmacyStatus = refreshPharmacyStatus;
 window.sendAllPendingEvents = sendAllPendingEvents; // 수동 전송 기능
 window.getNewFileCount = () => newFileParseCount; // 새 파일 개수 확인
 window.resetNewFileCount = () => { newFileParseCount = 0; }; // 카운터 초기화
+window.testSaveLog = saveLogToFile; // 테스트용
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
@@ -203,17 +204,20 @@ function getDeviceUidSync() {
  * 앱 종료 시 모든 이벤트 전송
  */
 async function sendAllPendingEvents() {
-    if (newFileParseCount === 0) {
-        console.log('📤 전송할 새 파일이 없습니다.');
-        logMessage('📤 전송할 새 파일이 없습니다.');
-        return;
-    }
-    
-    console.log(`📤 앱 종료 - 새 파일 ${newFileParseCount}개 파싱 이벤트 전송 시작`);
-    logMessage(`📤 앱 종료 - 새 파일 ${newFileParseCount}개 파싱 이벤트 전송 시작`);
-    
     try {
+        console.log('[RENDERER] Starting sendAllPendingEvents...');
+        console.log('[RENDERER] New file count:', newFileParseCount);
+        
+        if (newFileParseCount === 0) {
+            console.log('[RENDERER] No new files to send');
+            return;
+        }
+        
+        console.log('[RENDERER] Sending', newFileParseCount, 'parse events...');
+        
         const deviceUid = getDeviceUidSync();
+        console.log('[RENDERER] Device UID:', deviceUid);
+        
         const events = [];
         
         // newFileParseCount만큼 이벤트 생성
@@ -227,20 +231,23 @@ async function sendAllPendingEvents() {
             });
         }
         
+        console.log('[RENDERER] Created', events.length, 'events');
+        
         // IPC를 통해 메인 프로세스로 배치 전송
+        console.log('[RENDERER] Sending via IPC...');
         const result = await ipcRenderer.invoke('api:send-batch-parse-events', events);
         
-        if (result.success) {
-            console.log(`✅ 파싱 이벤트 전송 완료: ${newFileParseCount}개`);
-            logMessage(`✅ 파싱 이벤트 전송 완료: ${newFileParseCount}개`);
+        console.log('[RENDERER] IPC result:', result);
+        
+        if (result && result.success) {
+            console.log('[RENDERER] Events sent successfully:', newFileParseCount, 'events');
             newFileParseCount = 0; // 카운터 초기화
         } else {
-            console.warn('⚠️ 이벤트 전송 실패:', result.error);
-            logMessage(`⚠️ 이벤트 전송 실패: ${result.error}`);
+            console.error('[RENDERER] Event send failed:', result ? result.error : 'No result');
         }
     } catch (error) {
-        console.error('❌ 이벤트 전송 중 오류:', error);
-        logMessage(`❌ 이벤트 전송 중 오류: ${error.message}`);
+        console.error('[RENDERER] Error in sendAllPendingEvents:', error.message);
+        console.error('[RENDERER] Error stack:', error.stack);
     }
 }
 
@@ -438,7 +445,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 // 로그를 파일로 저장하는 함수
 function saveLogToFile() {
     try {
-        const logContent = document.getElementById('log').textContent;
+        console.log('[RENDERER] Starting log file save...');
+        
+        const logElement = document.getElementById('log');
+        if (!logElement) {
+            console.error('[RENDERER] Log element not found');
+            return null;
+        }
+        
+        const logContent = logElement.textContent;
+        console.log('[RENDERER] Log content length:', logContent.length);
+        
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const logFileName = `app-log-${timestamp}.txt`;
         
@@ -448,19 +465,23 @@ function saveLogToFile() {
         
         // AppData 폴더에 저장
         const appDataPath = path.join(os.homedir(), 'AppData', 'Roaming', 'auto-syrup');
+        console.log('[RENDERER] AppData path:', appDataPath);
+        
         if (!fs.existsSync(appDataPath)) {
+            console.log('[RENDERER] Creating AppData directory...');
             fs.mkdirSync(appDataPath, { recursive: true });
         }
         
         const logPath = path.join(appDataPath, logFileName);
+        console.log('[RENDERER] Writing log file to:', logPath);
+        
         fs.writeFileSync(logPath, logContent, 'utf8');
         
-        console.log(`📄 로그 파일 저장됨: ${logPath}`);
-        logMessage(`📄 로그 파일 저장됨: ${logPath}`);
+        console.log('[RENDERER] Log file saved successfully:', logPath);
         return logPath;
     } catch (error) {
-        console.error('로그 파일 저장 실패:', error);
-        logMessage(`❌ 로그 파일 저장 실패: ${error.message}`);
+        console.error('[RENDERER] Failed to save log file:', error.message);
+        console.error('[RENDERER] Error stack:', error.stack);
         return null;
     }
 }
