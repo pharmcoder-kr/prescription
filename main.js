@@ -31,6 +31,7 @@ const ACCOUNT_NAME = 'device-token';
 const API_BASE = 'https://autosyrup-backend.onrender.com';
 const TOKEN_FILE = path.join(app.getPath('userData'), 'auth-token.txt');
 const DEVICE_UID_FILE = path.join(app.getPath('userData'), 'device-uid.txt');
+const PHARMACY_STATUS_FILE = path.join(app.getPath('userData'), 'pharmacy-status.txt');
 
 let deviceUid = '';
 let authToken = '';
@@ -152,6 +153,10 @@ async function enrollPharmacy(payload) {
     if (response.data && response.data.access_token) {
       await saveToken(response.data.access_token);
       console.log('✅ 약국 등록 완료:', response.data.pharmacy);
+      
+      // 등록 후 상태 저장 (pending)
+      savePharmacyStatus(response.data.pharmacy?.status || 'pending');
+      
       return { success: true, data: response.data };
     } else {
       throw new Error('서버 응답에 토큰이 없습니다.');
@@ -210,6 +215,27 @@ async function checkPharmacyStatus() {
   }
 }
 
+// 이전 약국 상태 저장
+function savePharmacyStatus(status) {
+  try {
+    fs.writeFileSync(PHARMACY_STATUS_FILE, status || '', 'utf8');
+  } catch (error) {
+    console.error('약국 상태 저장 실패:', error);
+  }
+}
+
+// 이전 약국 상태 불러오기
+function loadPreviousPharmacyStatus() {
+  try {
+    if (fs.existsSync(PHARMACY_STATUS_FILE)) {
+      return fs.readFileSync(PHARMACY_STATUS_FILE, 'utf8').trim();
+    }
+  } catch (error) {
+    console.error('약국 상태 불러오기 실패:', error);
+  }
+  return null;
+}
+
 // 승인 대기 알림 (비차단식)
 function showPendingNotification() {
   if (!mainWindow) return;
@@ -219,6 +245,20 @@ function showPendingNotification() {
     title: '알림',
     message: '약국 승인 대기 중',
     detail: '등록이 완료되었습니다. 관리자 승인 후 파싱 이벤트가 전송됩니다.\n\n프로그램은 정상적으로 사용 가능합니다.',
+    buttons: ['확인'],
+    noLink: true
+  });
+}
+
+// 승인 완료 알림
+function showApprovalCompletedNotification() {
+  if (!mainWindow) return;
+  
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: '승인 완료!',
+    message: '약국 등록이 승인되었습니다! 🎉',
+    detail: '이제 모든 기능을 정상적으로 사용할 수 있습니다.\n파싱 이벤트가 서버로 전송됩니다.',
     buttons: ['확인'],
     noLink: true
   });
@@ -418,22 +458,38 @@ app.whenReady().then(async () => {
       await deleteToken();
       createEnrollWindow();
     } else {
-      // 약국 상태 확인
-      const status = await checkPharmacyStatus();
-      console.log('✅ 인증 완료 - 상태:', status);
+      // 이전 상태 불러오기
+      const previousStatus = loadPreviousPharmacyStatus();
       
-      if (status === 'pending') {
+      // 약국 상태 확인
+      const currentStatus = await checkPharmacyStatus();
+      console.log('✅ 인증 완료 - 이전 상태:', previousStatus, '현재 상태:', currentStatus);
+      
+      // 상태 변경 감지 및 알림
+      if (previousStatus === 'pending' && currentStatus === 'active') {
+        // pending → active: 승인 완료 알림!
+        console.log('🎉 약국 승인 완료!');
+        setTimeout(() => {
+          showApprovalCompletedNotification();
+        }, 2000);
+      } else if (currentStatus === 'pending') {
         console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
         // pending 상태여도 앱은 정상 사용 가능 (등록 창 표시 안 함)
-        setTimeout(() => {
-          showPendingNotification();
-        }, 2000);
-      } else if (status === 'rejected') {
+        // 이전 상태도 pending이면 알림 안 함 (매번 알림 방지)
+        if (previousStatus !== 'pending') {
+          setTimeout(() => {
+            showPendingNotification();
+          }, 2000);
+        }
+      } else if (currentStatus === 'rejected') {
         console.log('⚠️ 약국 등록이 거부되었습니다.');
         showRejectedMessage();
-      } else if (status === 'active') {
+      } else if (currentStatus === 'active') {
         console.log('✅ 약국 승인 완료 - 정상 사용 가능');
       }
+      
+      // 현재 상태 저장
+      savePharmacyStatus(currentStatus);
     }
   }
   
