@@ -127,6 +127,43 @@ window.showQueueStatus = () => {
 // 앱 종료 시 전송을 위한 큐
 let parseEventQueue = [];
 
+// parsedFiles를 로컬에 저장/불러오기
+const PARSED_FILES_PATH = path.join(require('os').homedir(), 'AppData', 'Roaming', 'auto-syrup', 'parsed-files.json');
+
+/**
+ * parsedFiles를 로컬 파일에 저장
+ */
+function saveParsedFiles() {
+    try {
+        const dir = path.dirname(PARSED_FILES_PATH);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(PARSED_FILES_PATH, JSON.stringify([...parsedFiles]), 'utf8');
+    } catch (error) {
+        console.error('parsedFiles 저장 중 오류:', error);
+    }
+}
+
+/**
+ * parsedFiles를 로컬 파일에서 불러오기
+ */
+function loadParsedFiles() {
+    try {
+        if (fs.existsSync(PARSED_FILES_PATH)) {
+            const data = fs.readFileSync(PARSED_FILES_PATH, 'utf8');
+            const files = JSON.parse(data);
+            parsedFiles = new Set(files);
+            console.log(`✅ parsedFiles 불러오기 완료: ${parsedFiles.size}개 파일`);
+        } else {
+            console.log('ℹ️ parsedFiles 파일이 없습니다. 새로 시작합니다.');
+        }
+    } catch (error) {
+        console.error('parsedFiles 불러오기 중 오류:', error);
+        parsedFiles = new Set();
+    }
+}
+
 /**
  * 파일이 오늘 생성된 파일인지 확인
  * @param {string} filePath - 파일 경로
@@ -472,6 +509,9 @@ async function initializeApp() {
     
     // 약국 승인 상태 확인
     await checkAndUpdatePharmacyStatus();
+    
+    // parsedFiles 불러오기 (프로그램 시작 시)
+    loadParsedFiles();
     
     await loadPrescriptionPath();
     await loadConnections(); // 저장된 연결 정보 로드
@@ -1804,6 +1844,7 @@ function parsePrescriptionFileWithoutEvent(filePath) {
             };
             
             parsedFiles.add(filePath);
+            saveParsedFiles(); // parsedFiles 저장
             logMessage(`기존 파일 파싱 완료: ${path.basename(filePath)} (이벤트 전송 없음)`);
         }
     } catch (error) {
@@ -1925,6 +1966,7 @@ function parsePrescriptionFile(filePath) {
             };
             
             parsedFiles.add(filePath);
+            saveParsedFiles(); // parsedFiles 저장
             logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
             // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
@@ -2020,6 +2062,7 @@ function parsePrescriptionFile(filePath) {
             };
             
             parsedFiles.add(filePath);
+            saveParsedFiles(); // parsedFiles 저장
             logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
             // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
@@ -2969,7 +3012,7 @@ function startPrescriptionMonitor() {
                 if (!parsedFiles.has(filePath)) {
                     const receiptNumber = path.basename(filePath, fileExtension);
                     logMessage(`새 파일 감지: ${path.basename(filePath)}`);
-                    parsePrescriptionFileWithoutEvent(filePath);
+                    parsePrescriptionFile(filePath);
                     
                     // 파일명에서 날짜 추출
                     let datePart = '';
