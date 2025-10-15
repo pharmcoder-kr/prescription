@@ -61,7 +61,10 @@ async function getOrCreateDeviceUid() {
 
 // 토큰 가져오기 (keytar 우선, 실패 시 파일)
 async function getToken() {
-  if (authToken) return authToken;
+  if (authToken) {
+    console.log('[AUTH] Token loaded from memory');
+    return authToken;
+  }
 
   try {
     // keytar 사용 시도
@@ -69,6 +72,7 @@ async function getToken() {
       const token = await keytar.getPassword(SERVICE_NAME, ACCOUNT_NAME);
       if (token) {
         authToken = token;
+        console.log('[AUTH] Token loaded from keytar');
         return token;
       }
     }
@@ -76,10 +80,13 @@ async function getToken() {
     // keytar 실패 시 파일에서 읽기
     if (fs.existsSync(TOKEN_FILE)) {
       authToken = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+      console.log('[AUTH] Token loaded from file');
       return authToken;
     }
+    
+    console.log('[AUTH] No token found');
   } catch (error) {
-    console.error('토큰 로드 오류:', error);
+    console.error('[AUTH] Token loading failed:', error);
   }
   
   return null;
@@ -183,16 +190,25 @@ async function enrollPharmacy(payload) {
 async function verifyToken() {
   try {
     const token = await getToken();
-    if (!token) return false;
+    if (!token) {
+      console.log('[AUTH] No token found');
+      return false;
+    }
 
+    console.log('[AUTH] Verifying token...');
     const response = await axios.get(`${API_BASE}/v1/auth/verify`, {
       headers: { 'Authorization': `Bearer ${token}` },
       timeout: 5000
     });
 
+    console.log('[AUTH] Token verification response:', response.data);
     return response.data && response.data.valid;
   } catch (error) {
-    console.error('토큰 검증 실패:', error);
+    console.error('[AUTH] Token verification failed:', error.message);
+    if (error.response) {
+      console.error('[AUTH] Response status:', error.response.status);
+      console.error('[AUTH] Response data:', error.response.data);
+    }
     return false;
   }
 }
@@ -492,21 +508,25 @@ app.whenReady().then(async () => {
   
   // 토큰 확인
   const token = await getToken();
+  console.log('[AUTH] Token exists:', !!token);
   
   // 메인 윈도우 생성
   createWindow();
   
   // 토큰이 없으면 등록 창 표시
   if (!token) {
-    console.log('⚠️ 토큰이 없습니다. 등록 창을 표시합니다.');
+    console.log('[AUTH] No token found, showing enrollment window');
     setTimeout(() => {
       createEnrollWindow();
     }, 1000);
   } else {
     // 토큰 검증
+    console.log('[AUTH] Token found, verifying...');
     const isValid = await verifyToken();
+    console.log('[AUTH] Token valid:', isValid);
+    
     if (!isValid) {
-      console.log('⚠️ 토큰이 유효하지 않습니다. 등록 창을 표시합니다.');
+      console.log('[AUTH] Token invalid, showing enrollment window');
       await deleteToken();
       createEnrollWindow();
     } else {
