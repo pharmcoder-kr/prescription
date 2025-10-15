@@ -106,26 +106,15 @@ async function refreshPharmacyStatus() {
 // 글로벌로 노출 (개발자 도구에서 사용 가능)
 window.refreshPharmacyStatus = refreshPharmacyStatus;
 window.sendAllPendingEvents = sendAllPendingEvents; // 수동 전송 기능
-window.getPendingEventsCount = () => parseEventQueue.length; // 대기 중인 이벤트 수 확인
-window.testQueueEvent = (fileName) => {
-    // 테스트용 함수 - 특정 파일명으로 큐 이벤트 테스트
-    const testPath = path.join(prescriptionPath, fileName);
-    console.log(`🧪 테스트: ${fileName} 큐 이벤트 추가`);
-    queueParseEvent(testPath);
-};
-window.showQueueStatus = () => {
-    console.log(`📊 큐 상태: ${parseEventQueue.length}개 대기 중`);
-    parseEventQueue.forEach((event, index) => {
-        console.log(`  ${index + 1}. ${path.basename(event.filePath)} - ${event.ts}`);
-    });
-};
+window.getNewFileCount = () => newFileParseCount; // 새 파일 개수 확인
+window.resetNewFileCount = () => { newFileParseCount = 0; }; // 카운터 초기화
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
 // ============================================
 
-// 앱 종료 시 전송을 위한 큐
-let parseEventQueue = [];
+// 앱 종료 시 전송을 위한 카운터
+let newFileParseCount = 0; // 새로 파싱된 파일 개수
 
 // parsedFiles를 로컬에 저장/불러오기
 const PARSED_FILES_PATH = path.join(require('os').homedir(), 'AppData', 'Roaming', 'auto-syrup', 'parsed-files.json');
@@ -189,51 +178,9 @@ function isFileCreatedToday(filePath) {
     }
 }
 
-/**
- * 파싱 이벤트를 큐에 추가 (앱 종료 시 전송용)
- * @param {string} filePath - 파싱한 파일 경로
- */
+// queueParseEvent 함수는 더 이상 사용하지 않음 (카운터 방식으로 변경)
 function queueParseEvent(filePath) {
-    // parseEventQueue가 null이면 무시 (프로그램 시작 시 초기 파싱 중)
-    if (parseEventQueue === null) {
-        return;
-    }
-    
-    console.log(`🔍 queueParseEvent 호출됨: ${path.basename(filePath)}`);
-    
-    try {
-        // 중복 키 생성 (device_uid + 파일경로 + 수정시간)
-        const stats = fs.statSync(filePath);
-        const mtime = stats.mtimeMs;
-        const deviceUid = getDeviceUidSync(); // 동기 방식으로 읽기
-        
-        console.log(`📊 파일 정보 - UID: ${deviceUid}, mtime: ${mtime}`);
-        
-        const idempotencyKey = `${deviceUid}_${filePath}_${mtime}`;
-        console.log(`🔑 idempotencyKey 생성: ${idempotencyKey}`);
-        
-        // 이미 큐에 있는지 확인
-        if (parseEventQueue.some(event => event.idempotency_key === idempotencyKey)) {
-            console.log('⚠️ 이미 큐에 있는 이벤트:', path.basename(filePath));
-            return;
-        }
-        
-        const eventData = {
-            source: 'pharmIT3000',
-            count: 1,
-            idempotency_key: idempotencyKey,
-            ts: new Date().toISOString(),
-            filePath: filePath
-        };
-        
-        // 큐에 추가
-        parseEventQueue.push(eventData);
-        console.log(`✅ 파싱 이벤트 큐에 추가: ${path.basename(filePath)} (총 ${parseEventQueue.length}개 대기 중)`);
-        
-    } catch (error) {
-        console.error('❌ 파싱 이벤트 큐 추가 중 오류:', error);
-        console.error('오류 상세:', error.stack);
-    }
+    // 아무 작업도 하지 않음 (카운터는 startPrescriptionMonitor에서 직접 증가)
 }
 
 /**
@@ -256,30 +203,44 @@ function getDeviceUidSync() {
  * 앱 종료 시 모든 이벤트 전송
  */
 async function sendAllPendingEvents() {
-    if (parseEventQueue.length === 0) {
-        console.log('📤 전송할 이벤트가 없습니다.');
+    if (newFileParseCount === 0) {
+        console.log('📤 전송할 새 파일이 없습니다.');
+        logMessage('📤 전송할 새 파일이 없습니다.');
         return;
     }
     
-    const eventsToSend = [...parseEventQueue];
-    parseEventQueue = [];
-    
-    console.log(`📤 앱 종료 - ${eventsToSend.length}개 이벤트 전송 시작`);
+    console.log(`📤 앱 종료 - 새 파일 ${newFileParseCount}개 파싱 이벤트 전송 시작`);
+    logMessage(`📤 앱 종료 - 새 파일 ${newFileParseCount}개 파싱 이벤트 전송 시작`);
     
     try {
+        const deviceUid = getDeviceUidSync();
+        const events = [];
+        
+        // newFileParseCount만큼 이벤트 생성
+        for (let i = 0; i < newFileParseCount; i++) {
+            events.push({
+                source: 'pharmIT3000',
+                count: 1,
+                idempotency_key: `${deviceUid}_batch_${Date.now()}_${i}`,
+                ts: new Date().toISOString(),
+                filePath: `batch_${i}` // 더미 경로
+            });
+        }
+        
         // IPC를 통해 메인 프로세스로 배치 전송
-        const result = await ipcRenderer.invoke('api:send-batch-parse-events', eventsToSend);
+        const result = await ipcRenderer.invoke('api:send-batch-parse-events', events);
         
         if (result.success) {
-            console.log(`✅ 모든 이벤트 전송 완료: ${eventsToSend.length}개`);
+            console.log(`✅ 파싱 이벤트 전송 완료: ${newFileParseCount}개`);
+            logMessage(`✅ 파싱 이벤트 전송 완료: ${newFileParseCount}개`);
+            newFileParseCount = 0; // 카운터 초기화
         } else {
             console.warn('⚠️ 이벤트 전송 실패:', result.error);
-            // 실패 시 로컬에 저장 (선택사항)
-            console.log('⚠️ 전송 실패한 이벤트들은 다음 시작 시 재시도됩니다.');
+            logMessage(`⚠️ 이벤트 전송 실패: ${result.error}`);
         }
     } catch (error) {
         console.error('❌ 이벤트 전송 중 오류:', error);
-        console.log('⚠️ 전송 실패한 이벤트들은 다음 시작 시 재시도됩니다.');
+        logMessage(`❌ 이벤트 전송 중 오류: ${error.message}`);
     }
 }
 
@@ -1781,18 +1742,12 @@ function parseAllPrescriptionFiles() {
         
         logMessage(`발견된 파일 수: ${files.length}`);
         
-        // 프로그램 시작 시에는 모든 파일을 파싱하여 리스트에 표시 (이벤트 전송 없음)
-        // 임시로 parseEventQueue를 비활성화하여 이벤트 큐에 추가되지 않도록 함
-        const originalQueue = parseEventQueue;
-        parseEventQueue = null; // queueParseEvent가 호출되어도 무시되도록
-        
+        // 프로그램 시작 시에는 모든 파일을 파싱하여 리스트에 표시 (카운터 증가 없음)
         files.forEach(filePath => {
-            // parsedFiles 체크를 우회하기 위해 임시로 제거
-            parsedFiles.delete(filePath);
+            // parsedFiles 체크 없이 모든 파일 파싱
+            parsedFiles.delete(filePath); // 임시로 제거
             parsePrescriptionFile(filePath); // 파싱 수행
         });
-        
-        parseEventQueue = originalQueue; // 원래 큐 복원
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
         Object.keys(parsedPrescriptions).forEach(key => {
@@ -1990,9 +1945,6 @@ function parsePrescriptionFile(filePath) {
             saveParsedFiles(); // parsedFiles 저장
             logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
-            // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
-            queueParseEvent(filePath);
-            
         } else {
             // 유팜 - XML 파일 파싱
             content = buffer.toString('utf8');
@@ -2085,9 +2037,6 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
             logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
-            
-            // 파싱 이벤트 큐에 추가 (새로 감지된 파일)
-            queueParseEvent(filePath);
         }
         
         // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경
@@ -3033,6 +2982,8 @@ function startPrescriptionMonitor() {
                 if (!parsedFiles.has(filePath)) {
                     const receiptNumber = path.basename(filePath, fileExtension);
                     logMessage(`새 파일 감지: ${path.basename(filePath)}`);
+                    newFileParseCount++; // 새 파일 카운터 증가
+                    logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount}`);
                     parsePrescriptionFile(filePath);
                     
                     // 파일명에서 날짜 추출
