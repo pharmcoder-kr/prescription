@@ -1779,15 +1779,20 @@ function parseAllPrescriptionFiles() {
             logMessage(`파일: ${path.basename(file)}`);
         });
         
+        console.log(`🔄 파싱 시작: ${files.length}개 파일, 프로그램: ${prescriptionProgram}`);
         files.forEach(filePath => {
+            console.log(`🔄 forEach 루프: ${path.basename(filePath)}`);
             // 프로그램 시작 시에는 parsedFiles 체크 없이 파싱 (리스트 표시용, 이벤트 전송 없음)
             if (prescriptionProgram === 'pm3000') {
+                console.log(`✅ PM3000 파싱 호출: ${path.basename(filePath)}`);
                 parsePrescriptionFileWithoutEvent(filePath);
             } else {
+                console.log(`✅ 유팜 파싱 호출: ${path.basename(filePath)}`);
                 // 유팜은 parsePrescriptionFile 사용 (이벤트 전송은 새 파일만)
                 parsePrescriptionFileWithoutEvent(filePath);
             }
         });
+        console.log(`🔄 파싱 완료: ${Object.keys(parsedPrescriptions).length}개 처방전`);
         
         logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
         Object.keys(parsedPrescriptions).forEach(key => {
