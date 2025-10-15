@@ -465,27 +465,32 @@ app.whenReady().then(async () => {
       const currentStatus = await checkPharmacyStatus();
       console.log('✅ 인증 완료 - 이전 상태:', previousStatus, '현재 상태:', currentStatus);
       
-      // 상태 변경 감지 및 알림
-      if (previousStatus === 'pending' && currentStatus === 'active') {
-        // pending → active: 승인 완료 알림!
-        console.log('🎉 약국 승인 완료!');
-        setTimeout(() => {
-          showApprovalCompletedNotification();
-        }, 2000);
-      } else if (currentStatus === 'pending') {
-        console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
-        // pending 상태여도 앱은 정상 사용 가능 (등록 창 표시 안 함)
-        // 이전 상태도 pending이면 알림 안 함 (매번 알림 방지)
-        if (previousStatus !== 'pending') {
+      // 상태에 따른 알림 처리
+      if (currentStatus === 'pending') {
+        console.log('⚠️ 약국 승인 대기 중입니다.');
+        // pending → pending: 알림 안 함 (이미 알고 있음)
+        // null → pending: 최초 등록 후, 알림 표시
+        // active → pending: 불가능한 경우
+        if (previousStatus === null || previousStatus === undefined) {
+          // 최초 등록 후
           setTimeout(() => {
             showPendingNotification();
           }, 2000);
         }
-      } else if (currentStatus === 'rejected') {
-        console.log('⚠️ 약국 등록이 거부되었습니다.');
-        showRejectedMessage();
       } else if (currentStatus === 'active') {
         console.log('✅ 약국 승인 완료 - 정상 사용 가능');
+        // pending → active: 승인 완료 알림!
+        if (previousStatus === 'pending') {
+          console.log('🎉 약국이 방금 승인되었습니다!');
+          setTimeout(() => {
+            showApprovalCompletedNotification();
+          }, 2000);
+        }
+      } else if (currentStatus === 'rejected') {
+        console.log('⚠️ 약국 등록이 거부되었습니다.');
+        setTimeout(() => {
+          showRejectedMessage();
+        }, 2000);
       }
       
       // 현재 상태 저장
