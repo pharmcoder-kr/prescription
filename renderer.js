@@ -110,6 +110,12 @@ window.refreshPharmacyStatus = refreshPharmacyStatus;
 // 파싱 이벤트 전송 (사용량 집계용)
 // ============================================
 
+// 배치 전송을 위한 큐
+let parseEventQueue = [];
+let batchSendTimer = null;
+const BATCH_SEND_INTERVAL = 30000; // 30초마다 배치 전송
+const MAX_BATCH_SIZE = 10; // 최대 10개씩 배치 전송
+
 /**
  * 파일이 오늘 생성된 파일인지 확인
  * @param {string} filePath - 파일 경로
@@ -130,7 +136,123 @@ function isFileCreatedToday(filePath) {
 }
 
 /**
- * 처방전 파싱 이벤트를 서버로 전송
+ * 파싱 이벤트를 큐에 추가 (배치 전송용)
+ * @param {string} filePath - 파싱한 파일 경로
+ */
+function queueParseEvent(filePath) {
+    try {
+        // 중복 키 생성 (device_uid + 파일경로 + 수정시간)
+        const stats = fs.statSync(filePath);
+        const mtime = stats.mtimeMs;
+        const deviceUid = getDeviceUidSync(); // 동기 방식으로 읽기
+        
+        const idempotencyKey = `${deviceUid}_${filePath}_${mtime}`;
+        
+        // 이미 큐에 있는지 확인
+        if (parseEventQueue.some(event => event.idempotency_key === idempotencyKey)) {
+            console.log('이미 큐에 있는 이벤트:', path.basename(filePath));
+            return;
+        }
+        
+        const eventData = {
+            source: 'pharmIT3000',
+            count: 1,
+            idempotency_key: idempotencyKey,
+            ts: new Date().toISOString(),
+            filePath: filePath
+        };
+        
+        // 큐에 추가
+        parseEventQueue.push(eventData);
+        console.log(`📝 파싱 이벤트 큐에 추가: ${path.basename(filePath)} (큐 크기: ${parseEventQueue.length})`);
+        
+        // 배치 전송 타이머 시작 (최초 이벤트만)
+        if (parseEventQueue.length === 1) {
+            startBatchSendTimer();
+        }
+        
+        // 큐가 가득 차면 즉시 전송
+        if (parseEventQueue.length >= MAX_BATCH_SIZE) {
+            sendBatchEvents();
+        }
+        
+    } catch (error) {
+        console.error('파싱 이벤트 큐 추가 중 오류:', error);
+    }
+}
+
+/**
+ * 디바이스 UID를 동기 방식으로 읽기
+ */
+function getDeviceUidSync() {
+    try {
+        const deviceUidPath = path.join(require('os').homedir(), 'AppData', 'Roaming', 'auto-syrup', 'device-uid.txt');
+        if (fs.existsSync(deviceUidPath)) {
+            return fs.readFileSync(deviceUidPath, 'utf8').trim();
+        }
+    } catch (error) {
+        console.error('디바이스 UID 읽기 실패:', error);
+    }
+    return 'unknown-device';
+}
+
+/**
+ * 배치 전송 타이머 시작
+ */
+function startBatchSendTimer() {
+    if (batchSendTimer) {
+        clearTimeout(batchSendTimer);
+    }
+    
+    batchSendTimer = setTimeout(() => {
+        if (parseEventQueue.length > 0) {
+            sendBatchEvents();
+        }
+    }, BATCH_SEND_INTERVAL);
+    
+    console.log(`⏰ 배치 전송 타이머 시작 (${BATCH_SEND_INTERVAL/1000}초 후 전송)`);
+}
+
+/**
+ * 배치 이벤트 전송
+ */
+async function sendBatchEvents() {
+    if (parseEventQueue.length === 0) {
+        return;
+    }
+    
+    const eventsToSend = [...parseEventQueue];
+    parseEventQueue = [];
+    
+    if (batchSendTimer) {
+        clearTimeout(batchSendTimer);
+        batchSendTimer = null;
+    }
+    
+    console.log(`📤 배치 전송 시작: ${eventsToSend.length}개 이벤트`);
+    
+    try {
+        // IPC를 통해 메인 프로세스로 배치 전송
+        const result = await ipcRenderer.invoke('api:send-batch-parse-events', eventsToSend);
+        
+        if (result.success) {
+            console.log(`✅ 배치 전송 완료: ${eventsToSend.length}개 이벤트`);
+        } else {
+            console.warn('⚠️ 배치 전송 실패:', result.error);
+            // 실패한 이벤트들을 다시 큐에 추가 (재시도)
+            parseEventQueue.unshift(...eventsToSend);
+            startBatchSendTimer(); // 재시도 타이머 시작
+        }
+    } catch (error) {
+        console.error('❌ 배치 전송 중 오류:', error);
+        // 실패한 이벤트들을 다시 큐에 추가
+        parseEventQueue.unshift(...eventsToSend);
+        startBatchSendTimer(); // 재시도 타이머 시작
+    }
+}
+
+/**
+ * 처방전 파싱 이벤트를 서버로 전송 (즉시 전송 - 레거시)
  * @param {string} filePath - 파싱한 파일 경로
  */
 async function sendParseEvent(filePath) {
@@ -317,6 +439,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!elements.datePicker.value) {
         const today = moment().format('YYYY-MM-DD');
         elements.datePicker.value = today;
+    }
+});
+
+// 앱 종료 시 남은 이벤트 전송
+window.addEventListener('beforeunload', async () => {
+    if (parseEventQueue.length > 0) {
+        console.log(`📤 앱 종료 - 남은 ${parseEventQueue.length}개 이벤트 전송`);
+        await sendBatchEvents();
     }
 });
 
@@ -1710,11 +1840,9 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
-            // 파싱 이벤트 전송 (오늘 생성된 파일만)
+            // 파싱 이벤트 큐에 추가 (오늘 생성된 파일만)
             if (isFileCreatedToday(filePath)) {
-                sendParseEvent(filePath).catch(err => {
-                    console.error('파싱 이벤트 전송 중 오류:', err);
-                });
+                queueParseEvent(filePath);
             } else {
                 console.log(`기존 파일 파싱 완료 (이벤트 전송 제외): ${path.basename(filePath)}`);
             }
@@ -1811,11 +1939,9 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
             
-            // 파싱 이벤트 전송 (오늘 생성된 파일만)
+            // 파싱 이벤트 큐에 추가 (오늘 생성된 파일만)
             if (isFileCreatedToday(filePath)) {
-                sendParseEvent(filePath).catch(err => {
-                    console.error('파싱 이벤트 전송 중 오류:', err);
-                });
+                queueParseEvent(filePath);
             } else {
                 console.log(`기존 파일 파싱 완료 (이벤트 전송 제외): ${path.basename(filePath)}`);
             }

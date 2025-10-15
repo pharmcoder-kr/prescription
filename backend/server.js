@@ -372,7 +372,94 @@ app.post('/v1/auth/enroll', async (req, res) => {
   }
 });
 
-// 파싱 이벤트 기록
+// 배치 파싱 이벤트 기록
+app.post('/v1/events/parse/batch', authenticateToken, async (req, res) => {
+  try {
+    const { events, count, ts } = req.body;
+    const { pharmacy_id, device_id } = req.user;
+
+    // 필수 필드 검증
+    if (!events || !Array.isArray(events) || events.length === 0) {
+      return res.status(400).json({ 
+        error: 'events 배열이 필요합니다.' 
+      });
+    }
+
+    // 약국 승인 상태 확인
+    const { data: pharmacy, error: pharmacyError } = await supabase
+      .from('pharmacies')
+      .select('status')
+      .eq('id', pharmacy_id)
+      .single();
+
+    if (pharmacyError || !pharmacy) {
+      return res.status(404).json({ error: '약국 정보를 찾을 수 없습니다.' });
+    }
+
+    if (pharmacy.status !== 'active') {
+      return res.status(403).json({ 
+        error: '관리자 승인이 필요합니다. 승인 후 사용 가능합니다.',
+        status: pharmacy.status
+      });
+    }
+
+    // 배치 이벤트 데이터 준비
+    const eventsToInsert = events.map(event => ({
+      pharmacy_id,
+      device_id,
+      source: event.source || 'pharmIT3000',
+      count: event.count || 1,
+      idempotency_key: event.idempotency_key,
+      ts: event.ts || new Date().toISOString()
+    }));
+
+    // 배치 삽입
+    const { data: insertedEvents, error: batchError } = await supabase
+      .from('parse_events')
+      .insert(eventsToInsert)
+      .select();
+
+    if (batchError) {
+      // 중복 키 에러는 부분 성공으로 처리
+      if (batchError.code === '23505') {
+        console.log(`⚠️ 일부 중복 이벤트 무시: ${events.length}개 중 일부`);
+        return res.status(200).json({ 
+          success: true, 
+          message: `${events.length}개 이벤트 처리 완료 (일부 중복 제외)`,
+          processed: events.length,
+          duplicates: true
+        });
+      }
+      console.error('배치 이벤트 저장 오류:', batchError);
+      return res.status(500).json({ error: '배치 이벤트 저장 중 오류가 발생했습니다.' });
+    }
+
+    // 약국 last_seen_at 업데이트
+    await supabase
+      .from('pharmacies')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('id', pharmacy_id);
+
+    // 디바이스 last_seen_at 업데이트
+    await supabase
+      .from('devices')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('id', device_id);
+
+    console.log(`✅ 배치 파싱 이벤트 저장 완료: ${events.length}개`);
+    res.json({ 
+      success: true, 
+      message: `${events.length}개 이벤트가 성공적으로 저장되었습니다.`,
+      processed: events.length,
+      events: insertedEvents
+    });
+  } catch (error) {
+    console.error('배치 파싱 이벤트 처리 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 파싱 이벤트 기록 (단일)
 app.post('/v1/events/parse', authenticateToken, async (req, res) => {
   try {
     const { source, count, idempotency_key, ts } = req.body;

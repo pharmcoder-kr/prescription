@@ -657,7 +657,55 @@ ipcMain.handle('auth:logout', async () => {
   return { success: true };
 });
 
-// 파싱 이벤트 전송 (렌더러에서 호출)
+// 배치 파싱 이벤트 전송 (렌더러에서 호출)
+ipcMain.handle('api:send-batch-parse-events', async (event, eventsArray) => {
+  try {
+    const token = await getToken();
+    if (!token) {
+      console.log('⚠️ 토큰이 없어 배치 파싱 이벤트를 전송하지 않습니다.');
+      return { success: false, error: 'no_token' };
+    }
+
+    // 배치 전송을 위한 요청 데이터 구성
+    const batchData = {
+      events: eventsArray,
+      count: eventsArray.length,
+      ts: new Date().toISOString()
+    };
+
+    const response = await axios.post(
+      `${API_BASE}/v1/events/parse/batch`,
+      batchData,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000 // 배치 전송은 시간이 더 걸릴 수 있음
+      }
+    );
+
+    console.log(`✅ 배치 파싱 이벤트 전송 성공: ${eventsArray.length}개`);
+    return { success: true, data: response.data };
+  } catch (error) {
+    console.error('❌ 배치 파싱 이벤트 전송 실패:', error);
+    
+    let errorMessage = '배치 이벤트 전송 실패';
+    if (error.response) {
+      errorMessage = error.response.data?.error || errorMessage;
+      
+      // 403 오류 (승인 대기)는 조용히 처리
+      if (error.response.status === 403) {
+        console.log('⚠️ 약국 승인 대기 중 - 배치 파싱 이벤트가 전송되지 않습니다.');
+        errorMessage = error.response.data?.error || '관리자 승인이 필요합니다.';
+      }
+    }
+    
+    return { success: false, error: errorMessage };
+  }
+});
+
+// 파싱 이벤트 전송 (렌더러에서 호출) - 레거시
 ipcMain.handle('api:send-parse-event', async (event, eventData) => {
   try {
     const token = await getToken();
