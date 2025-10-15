@@ -1799,7 +1799,7 @@ function parseAllPrescriptionFiles() {
  * 이벤트 전송 없이 파일 파싱만 (프로그램 시작 시 사용)
  */
 function parsePrescriptionFileWithoutEvent(filePath) {
-    if (parsedFiles.has(filePath)) return;
+    // 프로그램 시작 시에는 parsedFiles 체크 없이 항상 파싱 (리스트 표시용)
     
     try {
         const buffer = fs.readFileSync(filePath);
@@ -1846,9 +1846,8 @@ function parsePrescriptionFileWithoutEvent(filePath) {
                 medicines: medicines
             };
             
-            parsedFiles.add(filePath);
-            saveParsedFiles(); // parsedFiles 저장
-            logMessage(`기존 파일 파싱 완료: ${path.basename(filePath)} (이벤트 전송 없음)`);
+            // parsedFiles에 추가하지 않음 (리스트 표시만 하고, 새 파일 감지는 startPrescriptionMonitor에서 처리)
+            // logMessage(`기존 파일 파싱 완료: ${path.basename(filePath)} (이벤트 전송 없음)`);
         }
     } catch (error) {
         logMessage(`파일 파싱 중 오류: ${error.message}`);
