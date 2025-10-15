@@ -1819,19 +1819,24 @@ function parsePrescriptionFile(filePath) {
     
     // 약국 등록 및 승인 상태 확인
     if (pharmacyStatus === null) {
+        console.log(`❌ [파싱 차단] pharmacyStatus가 null입니다. 파일: ${path.basename(filePath)}`);
         logMessage(`⚠️ 약국 등록이 필요합니다. 파일 '${path.basename(filePath)}'은 등록 후 파싱됩니다.`);
         return;
     }
     
     if (pharmacyStatus === 'pending') {
+        console.log(`⏳ [파싱 차단] pharmacyStatus가 pending입니다. 파일: ${path.basename(filePath)}`);
         logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 파싱됩니다.`);
         return;
     }
     
     if (pharmacyStatus === 'rejected') {
+        console.log(`🚫 [파싱 차단] pharmacyStatus가 rejected입니다. 파일: ${path.basename(filePath)}`);
         logMessage(`❌ 약국 등록이 거부되었습니다. 파싱 기능을 사용할 수 없습니다.`);
         return;
     }
+    
+    console.log(`✅ [파싱 허용] pharmacyStatus가 active입니다. 파일: ${path.basename(filePath)}`);
     
     try {
         const buffer = fs.readFileSync(filePath);
