@@ -154,11 +154,14 @@ function loadParsedFiles() {
             const data = fs.readFileSync(PARSED_FILES_PATH, 'utf8');
             const files = JSON.parse(data);
             parsedFiles = new Set(files);
+            logMessage(`✅ parsedFiles 불러오기 완료: ${parsedFiles.size}개 파일`);
             console.log(`✅ parsedFiles 불러오기 완료: ${parsedFiles.size}개 파일`);
         } else {
+            logMessage('ℹ️ parsedFiles 파일이 없습니다. 새로 시작합니다.');
             console.log('ℹ️ parsedFiles 파일이 없습니다. 새로 시작합니다.');
         }
     } catch (error) {
+        logMessage(`❌ parsedFiles 불러오기 중 오류: ${error.message}`);
         console.error('parsedFiles 불러오기 중 오류:', error);
         parsedFiles = new Set();
     }
