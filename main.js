@@ -509,78 +509,56 @@ app.whenReady().then(async () => {
 // 모든 윈도우가 닫히면 앱 종료
 // 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
 let isQuitting = false;
-app.on('before-quit', async (event) => {
+app.on('before-quit', (event) => {
   console.log('[APP] before-quit event triggered');
-  
-  if (isQuitting) {
-    console.log('[APP] Already quitting, skipping...');
-    return;
-  }
-  
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    event.preventDefault(); // Prevent immediate exit
-    isQuitting = true;
-    
-    try {
-      console.log('[APP] Starting cleanup process...');
-      
-      // Check if renderer is ready
-      console.log('[APP] Checking renderer process...');
-      const isReady = await mainWindow.webContents.executeJavaScript('typeof window !== "undefined"');
-      console.log('[APP] Renderer ready:', isReady);
-      
-      if (!isReady) {
-        console.log('[APP] Renderer not ready, skipping cleanup');
-        app.exit(0);
-        return;
-      }
-      
-      // 새 파일 카운트 확인
-      try {
-        console.log('[APP] Getting new file count...');
-        const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
-        console.log('[APP] New file count:', count);
-      } catch (countError) {
-        console.error('[APP] Failed to get file count:', countError.message);
-      }
-      
-      // 로그 파일 저장
-      try {
-        console.log('[APP] Saving log file...');
-        const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
-        console.log('[APP] Log file saved:', logPath);
-      } catch (logError) {
-        console.error('[APP] Failed to save log:', logError.message);
-      }
-      
-      // 이벤트 전송
-      try {
-        console.log('[APP] Sending events...');
-        await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
-        console.log('[APP] Events sent successfully');
-      } catch (eventError) {
-        console.error('[APP] Failed to send events:', eventError.message);
-      }
-      
-      // 2초 대기 후 종료
-      setTimeout(() => {
-        console.log('[APP] Exiting application');
-        app.exit(0);
-      }, 2000);
-    } catch (error) {
-      console.error('[APP] Cleanup failed:', error.message);
-      console.error('[APP] Error stack:', error.stack);
-      app.exit(0);
-    }
-  } else {
-    console.log('[APP] Main window not available, exiting immediately');
-    app.exit(0);
-  }
+  // window-all-closed에서 정리 작업을 처리하므로 여기서는 아무것도 하지 않음
 });
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
   if (process.platform !== 'darwin') {
-    app.quit();
+    // 윈도우가 닫히기 전에 정리 작업 수행
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      console.log('[APP] Window closing, performing cleanup...');
+      
+      try {
+        // 새 파일 카운트 확인
+        try {
+          const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
+          console.log('[APP] New file count:', count);
+        } catch (countError) {
+          console.error('[APP] Failed to get file count:', countError.message);
+        }
+        
+        // 로그 파일 저장
+        try {
+          const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
+          console.log('[APP] Log file saved:', logPath);
+        } catch (logError) {
+          console.error('[APP] Failed to save log:', logError.message);
+        }
+        
+        // 이벤트 전송
+        try {
+          await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
+          console.log('[APP] Events sent successfully');
+        } catch (eventError) {
+          console.error('[APP] Failed to send events:', eventError.message);
+        }
+        
+        // 1초 대기 후 종료
+        setTimeout(() => {
+          console.log('[APP] Exiting application');
+          app.quit();
+        }, 1000);
+        
+      } catch (error) {
+        console.error('[APP] Cleanup failed:', error.message);
+        app.quit();
+      }
+    } else {
+      console.log('[APP] Main window not available, exiting immediately');
+      app.quit();
+    }
   }
 });
 
