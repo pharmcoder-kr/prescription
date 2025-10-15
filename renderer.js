@@ -105,17 +105,16 @@ async function refreshPharmacyStatus() {
 
 // 글로벌로 노출 (개발자 도구에서 사용 가능)
 window.refreshPharmacyStatus = refreshPharmacyStatus;
-window.sendAllPendingEvents = sendAllPendingEvents; // 수동 전송 기능 (레거시)
-window.getNewFileCount = () => newFileParseCount; // 새 파일 개수 확인 (레거시)
-window.resetNewFileCount = () => { newFileParseCount = 0; }; // 카운터 초기화 (레거시)
+window.sendAllPendingEvents = sendAllPendingEvents; // 수동 전송 기능
+window.getNewFileCount = () => newFileParseCount; // 새 파일 개수 확인
+window.resetNewFileCount = () => { newFileParseCount = 0; }; // 카운터 초기화
 window.testSaveLog = saveLogToFile; // 테스트용
-window.incrementParseCounter = incrementParseCounter; // 새로운 안전한 카운터 시스템
 
 // ============================================
 // 파싱 이벤트 전송 (사용량 집계용)
 // ============================================
 
-// 앱 종료 시 전송을 위한 카운터 (레거시 - 새로운 시스템으로 교체됨)
+// 앱 종료 시 전송을 위한 카운터
 let newFileParseCount = 0; // 새로 파싱된 파일 개수
 
 // parsedFiles를 로컬에 저장/불러오기
@@ -484,22 +483,6 @@ function saveLogToFile() {
         console.error('[RENDERER] Failed to save log file:', error.message);
         console.error('[RENDERER] Error stack:', error.stack);
         return null;
-    }
-}
-
-// ============================================
-// 새로운 안전한 파싱 이벤트 시스템
-// ============================================
-
-// 파싱 성공 시 카운터 증가 (main 프로세스에서 파일에 저장)
-async function incrementParseCounter(n = 1) {
-    try {
-        const result = await ipcRenderer.invoke('parse:increment', n);
-        console.log(`[RENDERER] Counter incremented by ${n}, total: ${result}`);
-        return result;
-    } catch (error) {
-        console.error('[RENDERER] Failed to increment counter:', error.message);
-        return 0;
     }
 }
 
@@ -3017,14 +3000,8 @@ function startPrescriptionMonitor() {
                 if (!parsedFiles.has(filePath)) {
                     const receiptNumber = path.basename(filePath, fileExtension);
                     logMessage(`새 파일 감지: ${path.basename(filePath)}`);
-                    
-                    // 새로운 안전한 시스템으로 카운터 증가
-                    const totalCount = await incrementParseCounter(1);
-                    logMessage(`📊 새 파일 파싱 카운트: ${totalCount}`);
-                    
-                    // 레거시 카운터도 유지 (호환성)
-                    newFileParseCount++;
-                    
+                    newFileParseCount++; // 새 파일 카운터 증가
+                    logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount}`);
                     parsePrescriptionFile(filePath);
                     
                     // 파일명에서 날짜 추출
