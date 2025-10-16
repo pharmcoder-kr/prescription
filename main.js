@@ -186,8 +186,11 @@ async function enrollPharmacy(payload) {
   }
 }
 
-// 토큰 검증
-async function verifyToken() {
+// 토큰 검증 (재시도 로직 포함)
+async function verifyToken(retryCount = 0) {
+  const MAX_RETRIES = 2;
+  const TIMEOUT_MS = 30000; // 30초로 증가 (Render.com 스핀업 대기)
+
   try {
     const token = await getToken();
     if (!token) {
@@ -195,21 +198,60 @@ async function verifyToken() {
       return false;
     }
 
-    console.log('[AUTH] Verifying token...');
+    console.log(`[AUTH] Verifying token... (attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
     const response = await axios.get(`${API_BASE}/v1/auth/verify`, {
       headers: { 'Authorization': `Bearer ${token}` },
-      timeout: 5000
+      timeout: TIMEOUT_MS
     });
 
     console.log('[AUTH] Token verification response:', response.data);
     return response.data && response.data.valid;
   } catch (error) {
     console.error('[AUTH] Token verification failed:', error.message);
+
     if (error.response) {
       console.error('[AUTH] Response status:', error.response.status);
       console.error('[AUTH] Response data:', error.response.data);
+      return false; // 서버가 명시적으로 거부한 경우 재시도 안 함
     }
+
+    // 네트워크 오류나 타임아웃인 경우 재시도
+    if (retryCount < MAX_RETRIES && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || !error.response)) {
+      console.log(`[AUTH] Retrying in 3 seconds... (서버 스핀업 대기 중)`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      return verifyToken(retryCount + 1);
+    }
+
     return false;
+  }
+}
+
+// 토큰 갱신
+async function refreshToken() {
+  try {
+    const oldToken = await getToken();
+    if (!oldToken) {
+      console.log('[AUTH] No token to refresh');
+      return null;
+    }
+
+    console.log('[AUTH] Refreshing token...');
+    const response = await axios.post(`${API_BASE}/v1/auth/refresh`, {}, {
+      headers: { 'Authorization': `Bearer ${oldToken}` },
+      timeout: 30000
+    });
+
+    if (response.data && response.data.access_token) {
+      const newToken = response.data.access_token;
+      await saveToken(newToken);
+      console.log('✅ 토큰 갱신 성공:', response.data.pharmacy.name);
+      return newToken;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[AUTH] Token refresh failed:', error.message);
+    return null;
   }
 }
 
@@ -510,7 +552,7 @@ app.whenReady().then(async () => {
   const token = await getToken();
   console.log('[AUTH] Token exists:', !!token);
   
-  // 메인 윈도우 생성
+  // 메인 윈도우 생성 (즉시 표시)
   createWindow();
   
   // 토큰이 없으면 등록 창 표시
@@ -520,28 +562,44 @@ app.whenReady().then(async () => {
       createEnrollWindow();
     }, 1000);
   } else {
-    // 토큰 검증
-    console.log('[AUTH] Token found, verifying...');
-    const isValid = await verifyToken();
-    console.log('[AUTH] Token valid:', isValid);
-    
+    // 토큰이 있으면 백그라운드에서 검증 (UI 블로킹 방지)
+    console.log('[AUTH] Token found, verifying in background...');
+    verifyTokenInBackground();
+  }
+});
+
+// 백그라운드 토큰 검증 함수
+// ⚠️ 주의: 이 함수는 UI 초기화를 차단하지 않습니다.
+// 메인 윈도우는 이미 표시되었고, 토큰 검증은 백그라운드에서만 수행됩니다.
+// 서버가 느리거나 다운되어도 앱 사용에는 영향이 없습니다.
+async function verifyTokenInBackground() {
+  try {
+    let isValid = await verifyToken();
+    console.log('[AUTH] Background verification result:', isValid);
+
     if (!isValid) {
-      console.log('[AUTH] Token invalid, showing enrollment window');
-      await deleteToken();
-      createEnrollWindow();
-    } else {
-      // 이전 상태 불러오기
-      const previousStatus = loadPreviousPharmacyStatus();
-      
-      // 약국 상태 확인
-      const currentStatus = await checkPharmacyStatus();
-      console.log('✅ 인증 완료 - 이전 상태:', previousStatus, '현재 상태:', currentStatus);
-      
-      // 상태에 따른 알림 처리
-      if (currentStatus === 'pending') {
-        console.log('⚠️ 약국 승인 대기 중입니다.');
-        // pending → pending: 알림 안 함 (이미 알고 있음)
-        // null → pending: 최초 등록 후, 알림 표시
+      console.log('[AUTH] Token invalid, attempting refresh...');
+      const newToken = await refreshToken();
+
+      if (newToken) {
+        console.log('[AUTH] Token refreshed successfully, re-verifying...');
+        isValid = await verifyToken();
+      } else {
+        console.log('[AUTH] Token refresh failed - 네트워크 오류일 수 있어 토큰 유지');
+        // 토큰을 삭제하지 않고 유지 (네트워크 문제일 수 있음)
+        return;
+      }
+    }
+
+    const previousStatus = loadPreviousPharmacyStatus();
+    const currentStatus = await checkPharmacyStatus();
+    console.log('[AUTH] Background status check - Previous:', previousStatus, 'Current:', currentStatus);
+
+    // 상태에 따른 알림 처리
+    if (currentStatus === 'pending') {
+      console.log('⚠️ 약국 승인 대기 중입니다.');
+      // pending → pending: 알림 안 함 (이미 알고 있음)
+      // null → pending: 최초 등록 후, 알림 표시
         // active → pending: 불가능한 경우
         if (previousStatus === null || previousStatus === undefined) {
           // 최초 등록 후
@@ -565,18 +623,19 @@ app.whenReady().then(async () => {
         }, 2000);
       }
       
-      // 현재 상태 저장
-      savePharmacyStatus(currentStatus);
-    }
+    // 현재 상태 저장
+    savePharmacyStatus(currentStatus);
+  } catch (error) {
+    console.error('[AUTH] Background verification error:', error.message);
   }
-  
-  // 앱 시작 5초 후 업데이트 확인 (패키징된 앱에서만)
+}
+
+// 앱 시작 5초 후 업데이트 확인 (패키징된 앱에서만)
+setTimeout(() => {
   if (app.isPackaged) {
-    setTimeout(() => {
-      autoUpdater.checkForUpdates();
-    }, 5000);
+    autoUpdater.checkForUpdates();
   }
-});
+}, 5000);
 
 // 모든 윈도우가 닫히면 앱 종료
 // 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
@@ -717,11 +776,10 @@ ipcMain.handle('auth:get-token', async () => {
   return await getToken();
 });
 
-// 등록 상태 확인
+// 등록 상태 확인 (로컬 토큰만 확인, 서버 검증 안 함)
 ipcMain.handle('auth:is-enrolled', async () => {
   const token = await getToken();
-  if (!token) return false;
-  return await verifyToken();
+  return !!token; // 토큰 존재 여부만 확인 (서버 검증은 백그라운드에서만 수행)
 });
 
 // 등록 창 열기 (설정에서)

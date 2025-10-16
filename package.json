@@ -1,6 +1,6 @@
 {
   "name": "auto-syrup",
-  "version": "1.3.1",
+  "version": "1.3.4",
   "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
@@ -11,7 +11,11 @@
     "build-installer": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false",
     "build-portable": "electron-builder --win --x64 --config.compression=maximum --config.win.target=portable",
     "build-nsis": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false --config.win.target=nsis",
-    "build-all": "npm run build && npm run build-nsis"
+    "build-all": "npm run build && npm run build-nsis",
+    "release": "node create-release.js",
+    "reset": "node reset-local-data.js",
+    "check-token": "node check-token-simple.js",
+    "find-token": "node find-token.js"
   },
   "keywords": [
     "arduino",
@@ -101,7 +105,7 @@
       "signAndEditExecutable": true,
       "icon": "assets/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "artifactName": "${productName} Setup ${version}.${ext}",
+      "artifactName": "auto-syrup-setup-${version}.${ext}",
       "publisherName": "PharmCoder",
       "verifyUpdateCodeSignature": false,
       "executableName": "오토시럽"

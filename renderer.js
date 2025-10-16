@@ -39,10 +39,13 @@ let pharmacyStatus = null; // 약국 승인 상태 (null, 'pending', 'active', '
 
 /**
  * 약국 승인 상태 확인 및 업데이트
+ * ⚠️ 주의: 이 함수는 서버와 통신하지 않고, 로컬 토큰과 상태 파일만 확인합니다.
+ * 서버 검증은 main.js의 verifyTokenInBackground()에서 백그라운드로 수행됩니다.
  */
 async function checkAndUpdatePharmacyStatus() {
-    console.log('[상태 확인] 약국 상태 확인 시작...');
+    console.log('[상태 확인] 약국 상태 확인 시작... (로컬만 확인, 서버 통신 안 함)');
     try {
+        // 로컬 토큰 존재 여부만 확인 (서버 검증 안 함)
         const isEnrolled = await ipcRenderer.invoke('auth:is-enrolled');
         
         if (!isEnrolled) {
@@ -51,14 +54,14 @@ async function checkAndUpdatePharmacyStatus() {
             return;
         }
         
-        // 토큰을 통해 상태 확인
+        // 토큰을 통해 상태 확인 (로컬에서만)
         const token = await ipcRenderer.invoke('auth:get-token');
         if (!token) {
             pharmacyStatus = null;
             return;
         }
         
-        // 상태 파일 읽기
+        // 상태 파일 읽기 (로컬 파일 시스템)
         const userDataPath = await ipcRenderer.invoke('get-user-data-path');
         const statusFilePath = path.join(userDataPath, 'pharmacy-status.txt');
         
