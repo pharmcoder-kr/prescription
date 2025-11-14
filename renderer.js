@@ -21,6 +21,7 @@ let isCheckingStatus = false; // 연결 상태 확인 중복 실행 방지
 let autoReconnectAttempted = new Map(); // 자동 재연결 시도한 기기들 (시도 횟수 포함)
 let manuallyDisconnectedDevices = new Set(); // 수동으로 연결을 끊은 기기들
 let networkPrefix = null; // 현재 네트워크 프리픽스
+let networkInfoMap = new Map(); // 네트워크 프리픽스 -> 네트워크 정보 매핑
 let transmissionStatus = {}; // 각 환자의 전송상태 저장 (receiptNumber -> count)
 let maxSyrupAmount = 100; // 시럽 최대량 (기본값: 100mL)
 let medicineTransmissionStatus = {}; // 각 약물의 전송상태 저장 (receiptNumber_medicineCode -> count)
@@ -700,6 +701,56 @@ function logMessage(message) {
     console.log(`[${timestamp}] ${message}`);
 }
 
+// 모든 네트워크 인터페이스 감지
+async function detectAllNetworks() {
+    try {
+        logMessage('모든 네트워크 인터페이스 감지 중...');
+        const allNetworks = await ipcRenderer.invoke('get-all-network-info');
+        
+        if (allNetworks && allNetworks.length > 0) {
+            // 프리픽스를 기준으로 중복 제거
+            const uniquePrefixes = new Set();
+            networkInfoMap.clear();
+            
+            allNetworks.forEach(net => {
+                if (!uniquePrefixes.has(net.prefix)) {
+                    uniquePrefixes.add(net.prefix);
+                    networkInfoMap.set(net.prefix, net);
+                }
+            });
+            
+            availableNetworks = Array.from(uniquePrefixes);
+            
+            // 우선순위에 따라 정렬된 네트워크 정보 가져오기
+            const primaryNetwork = await ipcRenderer.invoke('get-network-info');
+            if (primaryNetwork) {
+                networkPrefix = primaryNetwork.prefix;
+                logMessage(`주 네트워크: ${primaryNetwork.interface} (${primaryNetwork.address})`);
+                logMessage(`네트워크 프리픽스: ${networkPrefix}`);
+            } else if (availableNetworks.length > 0) {
+                networkPrefix = availableNetworks[0];
+                logMessage(`네트워크 프리픽스 (첫 번째): ${networkPrefix}`);
+            }
+            
+            logMessage(`감지된 네트워크 수: ${availableNetworks.length}`);
+            availableNetworks.forEach(prefix => {
+                const net = networkInfoMap.get(prefix);
+                if (net) {
+                    logMessage(`  - ${prefix} (${net.interface}: ${net.address})`);
+                }
+            });
+            
+            return true;
+        } else {
+            logMessage('사용 가능한 네트워크를 찾을 수 없습니다.');
+            return false;
+        }
+    } catch (error) {
+        logMessage(`네트워크 감지 중 오류 발생: ${error.message}`);
+        return false;
+    }
+}
+
 // 네트워크 감지
 async function detectNetworks() {
     try {
@@ -737,13 +788,21 @@ function updateNetworkCombo() {
     const networkCombo = document.getElementById('networkCombo');
     if (networkCombo) {
         networkCombo.innerHTML = '';
-        availableNetworks.forEach(network => {
+        availableNetworks.forEach(prefix => {
             const option = document.createElement('option');
-            option.value = network;
-            option.textContent = network;
+            option.value = prefix;
+            const netInfo = networkInfoMap.get(prefix);
+            if (netInfo) {
+                // 네트워크 인터페이스 이름과 IP 주소를 함께 표시
+                option.textContent = `${prefix} (${netInfo.interface}: ${netInfo.address})`;
+            } else {
+                option.textContent = prefix;
+            }
             networkCombo.appendChild(option);
         });
-        if (availableNetworks.length > 0) {
+        if (availableNetworks.length > 0 && networkPrefix) {
+            networkCombo.value = networkPrefix;
+        } else if (availableNetworks.length > 0) {
             networkCombo.value = availableNetworks[0];
         }
     }
@@ -3091,16 +3150,36 @@ function startPrescriptionMonitor() {
 }
 
 // 네트워크 스캔 모달 표시
-function showNetworkScanModal() {
+async function showNetworkScanModal() {
     const modal = new bootstrap.Modal(document.getElementById('networkScanModal'));
     modal.show();
     
     // 모달이 표시되면 초기 상태 설정
     updateScanStatus('대기중', 'info');
     
+    // 네트워크 정보 다시 감지
+    const detected = await detectAllNetworks();
+    if (detected) {
+        // 네트워크 콤보박스 업데이트
+        updateNetworkCombo();
+        
+        // 현재 선택된 네트워크 프리픽스가 있으면 유지, 없으면 첫 번째로 설정
+        const networkCombo = document.getElementById('networkCombo');
+        if (networkCombo && networkPrefix) {
+            networkCombo.value = networkPrefix;
+        }
+        
+        logMessage(`네트워크 스캔 준비 완료: ${networkPrefix || '선택되지 않음'}`);
+    } else {
+        logMessage('네트워크 감지 실패. 수동으로 설정해주세요.');
+        updateScanStatus('네트워크 감지 실패', 'error');
+    }
+    
     // 모달이 표시되면 즉시 스캔 시작
     setTimeout(() => {
-        scanNetwork();
+        if (networkPrefix) {
+            scanNetwork();
+        }
     }, 500);
 }
 
@@ -4026,11 +4105,50 @@ function createManualRow(initMac = null, initTotal = '') {
                 urgent: isUrgent
             };
             
-            const response = await axios.post(`http://${device.ip}/dispense`, data, {
-                timeout: 30000,
-                headers: { 'Content-Type': 'application/json' }
-            });
+            // 재시도 로직 (최대 3회)
+            const maxRetries = 3;
+            let lastError = null;
+            let response = null;
             
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    if (attempt > 1) {
+                        const delay = Math.min(1000 * Math.pow(2, attempt - 2), 4000); // 지수 백오프: 1초, 2초, 4초
+                        logMessage(`수동조제 재시도 ${attempt}/${maxRetries} (${delay/1000}초 대기 후...)`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                    
+                    response = await axios.post(`http://${device.ip}/dispense`, data, {
+                        timeout: 30000,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    // 성공 시 루프 종료
+                    break;
+                    
+                } catch (error) {
+                    lastError = error;
+                    const isLastAttempt = attempt === maxRetries;
+                    
+                    // 404 에러는 기기 엔드포인트 문제일 수 있음
+                    if (error.response && error.response.status === 404) {
+                        logMessage(`수동조제 전송 실패 (시도 ${attempt}/${maxRetries}): 기기 엔드포인트를 찾을 수 없음 (404)`);
+                    } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+                        logMessage(`수동조제 전송 실패 (시도 ${attempt}/${maxRetries}): 타임아웃`);
+                    } else if (error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH') {
+                        logMessage(`수동조제 전송 실패 (시도 ${attempt}/${maxRetries}): 기기 연결 불가`);
+                    } else {
+                        logMessage(`수동조제 전송 실패 (시도 ${attempt}/${maxRetries}): ${error.message}`);
+                    }
+                    
+                    // 마지막 시도가 아니면 계속, 마지막 시도면 에러 던지기
+                    if (isLastAttempt) {
+                        throw lastError;
+                    }
+                }
+            }
+            
+            // 성공 응답 처리
             logMessage(`수동조제 응답: ${JSON.stringify(response.data)}`);
             
             // 모든 200 응답(BUSY 포함)을 성공으로 처리
@@ -4052,7 +4170,17 @@ function createManualRow(initMac = null, initTotal = '') {
             
         } catch (error) {
             updateManualStatus(statusId, '실패');
-            logMessage(`수동조제 전송 실패: ${error.message}`);
+            
+            // 최종 실패 메시지
+            if (error.response && error.response.status === 404) {
+                logMessage(`수동조제 최종 실패: 기기 엔드포인트를 찾을 수 없음 (404) - 기기 상태를 확인하세요`);
+            } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+                logMessage(`수동조제 최종 실패: 타임아웃 - 기기 응답이 없습니다`);
+            } else if (error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH') {
+                logMessage(`수동조제 최종 실패: 기기 연결 불가 - 네트워크 연결을 확인하세요`);
+            } else {
+                logMessage(`수동조제 최종 실패: ${error.message}`);
+            }
             
             // 실패 시에도 기기 상태를 "연결됨"으로 복구
             if (connectedDevices[selectedMac]) {

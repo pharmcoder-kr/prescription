@@ -225,6 +225,25 @@
             </div>
 
             <div class="mb-3">
+                <label for="adminName" class="form-label">
+                    <i class="fas fa-user me-1"></i>관리자 이름
+                </label>
+                <input type="text" class="form-control" id="adminName" 
+                       placeholder="예: 김약사" required>
+                <div class="form-text">약국 관리자 성명</div>
+            </div>
+
+            <div class="mb-3">
+                <label for="adminPhone" class="form-label">
+                    <i class="fas fa-phone me-1"></i>핸드폰 번호
+                </label>
+                <input type="tel" class="form-control" id="adminPhone" 
+                       placeholder="예: 010-1234-5678" required 
+                       pattern="[0-9]{3}-?[0-9]{4}-?[0-9]{4}">
+                <div class="form-text">010-0000-0000 형식</div>
+            </div>
+
+            <div class="mb-3">
                 <label for="contactEmail" class="form-label">
                     <i class="fas fa-envelope me-1"></i>담당자 이메일 (선택)
                 </label>
@@ -280,11 +299,13 @@
                 name: document.getElementById('pharmacyName').value.trim(),
                 ykiin: document.getElementById('ykiin').value.trim().replace(/-/g, ''),
                 biz_no: document.getElementById('bizNo').value.trim(),
+                admin_name: document.getElementById('adminName').value.trim(),
+                admin_phone: document.getElementById('adminPhone').value.trim(),
                 contact_email: document.getElementById('contactEmail').value.trim()
             };
 
             // 유효성 검사
-            if (!formData.name || !formData.ykiin || !formData.biz_no) {
+            if (!formData.name || !formData.ykiin || !formData.biz_no || !formData.admin_name || !formData.admin_phone) {
                 showError('모든 필수 항목을 입력해주세요.');
                 resetButton();
                 return;
@@ -352,6 +373,17 @@
                 value = value.slice(0, 3) + '-' + value.slice(3);
             } else if (value.length > 5) {
                 value = value.slice(0, 3) + '-' + value.slice(3, 5) + '-' + value.slice(5, 10);
+            }
+            e.target.value = value;
+        });
+
+        // 핸드폰 번호 자동 포맷팅
+        document.getElementById('adminPhone').addEventListener('input', (e) => {
+            let value = e.target.value.replace(/[^0-9]/g, '');
+            if (value.length > 3 && value.length <= 7) {
+                value = value.slice(0, 3) + '-' + value.slice(3);
+            } else if (value.length > 7) {
+                value = value.slice(0, 3) + '-' + value.slice(3, 7) + '-' + value.slice(7, 11);
             }
             e.target.value = value;
         });

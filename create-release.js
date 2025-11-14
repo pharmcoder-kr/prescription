@@ -5,7 +5,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.4';
+const VERSION = '1.3.7';
 const TAG = `v${VERSION}`;
 
 async function createRelease() {
@@ -17,16 +17,17 @@ async function createRelease() {
 
   const releaseNotes = `## 주요 변경사항
 
-### 🚀 성능 개선
-- **앱 시작 속도 대폭 개선**: 로컬 토큰이 있으면 서버 검증 없이 즉시 실행
-- **처방전 리스트 즉시 로딩**: 컴퓨터를 껐다가 켜도 빠른 시작
-- **오프라인 사용성 향상**: 서버 다운 시에도 정상 작동
-- **백그라운드 검증**: 서버 상태 확인은 백그라운드에서만 수행
+### 🌐 네트워크 스캔 개선
+- **정확한 네트워크 범위 감지**: 실제 사용 중인 네트워크 인터페이스를 우선적으로 선택
+- **Wi-Fi 우선 선택**: Wi-Fi 인터페이스를 자동으로 우선 선택하여 정확한 스캔 범위 감지
+- **다중 네트워크 지원**: 여러 네트워크 인터페이스가 있을 때 콤보박스에서 선택 가능
+- **가상 어댑터 제외**: VMware, VirtualBox 등 가상 어댑터는 낮은 우선순위로 설정
+- **네트워크 정보 표시**: 콤보박스에 인터페이스 이름과 IP 주소를 함께 표시
 
 ### 🔧 기술적 개선
-- \`auth:is-enrolled\` 핸들러 최적화 (로컬 토큰만 확인)
-- \`checkAndUpdatePharmacyStatus\` 함수 최적화
-- 서버 타임아웃이 UI를 차단하지 않도록 수정
+- 네트워크 감지 로직 개선 (main.js)
+- 모든 네트워크 인터페이스 감지 기능 추가
+- 네트워크 스캔 모달에서 네트워크 정보 재감지 기능 추가
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -49,7 +50,7 @@ async function createRelease() {
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
       {
         tag_name: TAG,
-        name: `v${VERSION} - 앱 시작 속도 개선`,
+        name: `v${VERSION} - 네트워크 스캔 개선`,
         body: releaseNotes,
         draft: true,
         prerelease: false

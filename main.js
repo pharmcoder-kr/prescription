@@ -368,6 +368,13 @@ function createEnrollWindow() {
 
   enrollWindow.loadFile('enroll.html');
 
+  // Windows 작업표시줄 아이콘 강제 설정
+  enrollWindow.once('ready-to-show', () => {
+    if (process.platform === 'win32') {
+      enrollWindow.setIcon(getIconPath());
+    }
+  });
+
   enrollWindow.on('closed', () => {
     enrollWindow = null;
   });
@@ -375,10 +382,13 @@ function createEnrollWindow() {
 
 // 아이콘 절대경로 도우미
 function getIconPath() {
-  // electron-builder에서 directories.buildResources = "assets" 라면
-  // 패키징 후 process.resourcesPath/assets 에 복사됨
-  const base = isDev ? __dirname : process.resourcesPath;
-  return path.join(base, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  if (isDev) {
+    // 개발 모드: 현재 디렉토리의 assets 폴더 사용
+    return path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  } else {
+    // 프로덕션 모드: process.resourcesPath/assets 사용
+    return path.join(process.resourcesPath, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  }
 }
 
 // 자동 업데이트 설정
@@ -466,6 +476,11 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     mainWindow.maximize(); // 앱 시작 시 최대화
+    
+    // Windows 작업표시줄 아이콘 강제 설정
+    if (process.platform === 'win32') {
+      mainWindow.setIcon(getIconPath());
+    }
   });
 
   // HTML 파일 로드
@@ -544,6 +559,11 @@ function createWindow() {
 app.whenReady().then(async () => {
   // 메뉴바 완전 제거
   Menu.setApplicationMenu(null);
+  
+  // Windows 작업표시줄 아이콘 강제 설정 (앱 시작 시)
+  if (process.platform === 'win32') {
+    app.setAppUserModelId(APP_ID);
+  }
   
   // 디바이스 UID 초기화
   await getOrCreateDeviceUid();
@@ -665,25 +685,91 @@ ipcMain.handle('select-directory', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('get-network-info', async () => {
+// 모든 네트워크 인터페이스 가져오기
+ipcMain.handle('get-all-network-info', async () => {
   try {
     const interfaces = os.networkInterfaces();
+    const availableNetworks = [];
+    
+    // 모든 네트워크 인터페이스 수집
     for (const [name, nets] of Object.entries(interfaces)) {
       for (const net of nets) {
         // IPv4이고 로컬호스트가 아닌 인터페이스 찾기
         if (net.family === 'IPv4' && !net.internal) {
           const ipParts = net.address.split('.');
           const prefix = ipParts.slice(0, 3).join('.') + '.';
-          return {
+          availableNetworks.push({
             interface: name,
             address: net.address,
             prefix: prefix,
             netmask: net.netmask
-          };
+          });
         }
       }
     }
-    return null;
+    
+    return availableNetworks;
+  } catch (error) {
+    console.error('네트워크 정보 가져오기 실패:', error);
+    return [];
+  }
+});
+
+ipcMain.handle('get-network-info', async () => {
+  try {
+    const interfaces = os.networkInterfaces();
+    const availableNetworks = [];
+    
+    // 모든 네트워크 인터페이스 수집
+    for (const [name, nets] of Object.entries(interfaces)) {
+      for (const net of nets) {
+        // IPv4이고 로컬호스트가 아닌 인터페이스 찾기
+        if (net.family === 'IPv4' && !net.internal) {
+          const ipParts = net.address.split('.');
+          const prefix = ipParts.slice(0, 3).join('.') + '.';
+          availableNetworks.push({
+            interface: name,
+            address: net.address,
+            prefix: prefix,
+            netmask: net.netmask
+          });
+        }
+      }
+    }
+    
+    if (availableNetworks.length === 0) {
+      return null;
+    }
+    
+    // 우선순위에 따라 정렬:
+    // 1. Wi-Fi 인터페이스 우선
+    // 2. 이더넷 인터페이스
+    // 3. 기타 인터페이스
+    // 4. 가상 어댑터나 특수 인터페이스는 낮은 우선순위 (VMware, VirtualBox, Hyper-V 등)
+    const priorityOrder = (net) => {
+      const name = net.interface.toLowerCase();
+      // 가상 어댑터는 낮은 우선순위
+      if (name.includes('vmware') || name.includes('virtualbox') || 
+          name.includes('hyper-v') || name.includes('vpn') ||
+          name.includes('tunnel') || name.includes('loopback')) {
+        return 100;
+      }
+      // Wi-Fi 우선
+      if (name.includes('wi-fi') || name.includes('wlan') || name.includes('wireless')) {
+        return 1;
+      }
+      // 이더넷
+      if (name.includes('ethernet') || name.includes('eth') || name.includes('lan')) {
+        return 2;
+      }
+      // 기타
+      return 10;
+    };
+    
+    availableNetworks.sort((a, b) => priorityOrder(a) - priorityOrder(b));
+    
+    // 가장 우선순위가 높은 네트워크 반환
+    return availableNetworks[0];
   } catch (error) {
     console.error('네트워크 정보 가져오기 실패:', error);
     return null;
