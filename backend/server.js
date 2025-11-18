@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const path = require('path');
+const axios = require('axios');
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
@@ -22,6 +23,39 @@ const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('he
 
 // 관리자 API 키 (환경 변수에서 읽기)
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'my-secret-admin-key-123';
+
+// 텔레그램 봇 설정 (환경 변수에서 읽기)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// 텔레그램 메시지 전송 함수
+async function sendTelegramNotification(message) {
+  // 텔레그램 설정이 없으면 알림 전송하지 않음
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.log('⚠️ 텔레그램 알림 설정이 없습니다. 환경 변수를 확인하세요.');
+    return false;
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const response = await axios.post(url, {
+      chat_id: TELEGRAM_CHAT_ID,
+      text: message,
+      parse_mode: 'HTML'
+    });
+
+    if (response.data.ok) {
+      console.log('✅ 텔레그램 알림 전송 성공');
+      return true;
+    } else {
+      console.error('❌ 텔레그램 알림 전송 실패:', response.data);
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ 텔레그램 알림 전송 오류:', error.message);
+    return false;
+  }
+}
 
 // 미들웨어
 app.use(cors());
@@ -404,6 +438,26 @@ app.post('/v1/auth/register', async (req, res) => {
 
     console.log(`✅ 회원가입 완료 (승인 대기): ${name} (${username})`);
 
+    // 텔레그램 알림 전송
+    const telegramMessage = `
+🔔 <b>새로운 약국 등록 요청</b>
+
+📋 <b>약국명:</b> ${name}
+🏥 <b>요양기관번호:</b> ${ykiin}
+📄 <b>사업자번호:</b> ${biz_no}
+📧 <b>이메일:</b> ${contact_email || '없음'}
+👤 <b>사용자 ID:</b> ${username}
+⏰ <b>등록 시간:</b> ${new Date().toLocaleString('ko-KR')}
+
+✅ 승인하려면 관리자 페이지에서 확인하세요:
+https://autosyrup-backend.onrender.com/admin
+    `.trim();
+
+    // 비동기로 알림 전송 (응답을 기다리지 않음)
+    sendTelegramNotification(telegramMessage).catch(err => {
+      console.error('텔레그램 알림 전송 실패 (무시):', err.message);
+    });
+
     res.status(200).json({
       success: true,
       message: '회원가입이 완료되었습니다. 관리자 승인 후 로그인할 수 있습니다.',
@@ -601,6 +655,25 @@ app.post('/v1/auth/enroll', async (req, res) => {
     );
 
     console.log(`✅ 약국 등록 완료 (승인 대기): ${name} (${ykiin})`);
+
+    // 텔레그램 알림 전송
+    const telegramMessage = `
+🔔 <b>새로운 약국 등록 요청</b>
+
+📋 <b>약국명:</b> ${name}
+🏥 <b>요양기관번호:</b> ${ykiin}
+📄 <b>사업자번호:</b> ${biz_no}
+📧 <b>이메일:</b> ${contact_email || '없음'}
+⏰ <b>등록 시간:</b> ${new Date().toLocaleString('ko-KR')}
+
+✅ 승인하려면 관리자 페이지에서 확인하세요:
+https://autosyrup-backend.onrender.com/admin
+    `.trim();
+
+    // 비동기로 알림 전송 (응답을 기다리지 않음)
+    sendTelegramNotification(telegramMessage).catch(err => {
+      console.error('텔레그램 알림 전송 실패 (무시):', err.message);
+    });
 
     res.status(200).json({
       success: true,
@@ -1258,6 +1331,15 @@ app.listen(PORT, () => {
   console.log('  GET  /v1/admin/processed');
   console.log('  GET  /v1/admin/stats');
   console.log('  GET  /v1/admin/usage');
+  console.log('===========================================');
+  console.log('📱 텔레그램 알림 설정:');
+  if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+    console.log('  ✅ 텔레그램 알림 활성화됨');
+    console.log(`  📍 Chat ID: ${TELEGRAM_CHAT_ID}`);
+  } else {
+    console.log('  ⚠️ 텔레그램 알림 비활성화됨 (환경 변수 미설정)');
+    console.log('  💡 TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID를 설정하세요');
+  }
   console.log('===========================================');
 });
 
