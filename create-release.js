@@ -5,7 +5,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.7';
+const VERSION = '1.3.8';
 const TAG = `v${VERSION}`;
 
 async function createRelease() {
@@ -17,17 +17,13 @@ async function createRelease() {
 
   const releaseNotes = `## 주요 변경사항
 
-### 🌐 네트워크 스캔 개선
-- **정확한 네트워크 범위 감지**: 실제 사용 중인 네트워크 인터페이스를 우선적으로 선택
-- **Wi-Fi 우선 선택**: Wi-Fi 인터페이스를 자동으로 우선 선택하여 정확한 스캔 범위 감지
-- **다중 네트워크 지원**: 여러 네트워크 인터페이스가 있을 때 콤보박스에서 선택 가능
-- **가상 어댑터 제외**: VMware, VirtualBox 등 가상 어댑터는 낮은 우선순위로 설정
-- **네트워크 정보 표시**: 콤보박스에 인터페이스 이름과 IP 주소를 함께 표시
+### 🎨 UI 개선
+- **설정 화면 간소화**: 불필요한 프로그램별 특징 정보 박스 제거
+- **처방조제프로그램 선택 개선**: 유팜 옵션 제거 (계약 진행 중)
 
 ### 🔧 기술적 개선
-- 네트워크 감지 로직 개선 (main.js)
-- 모든 네트워크 인터페이스 감지 기능 추가
-- 네트워크 스캔 모달에서 네트워크 정보 재감지 기능 추가
+- 설정 화면 UI 정리 및 최적화
+- 사용자 혼란을 줄이기 위한 인터페이스 개선
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -50,7 +46,7 @@ async function createRelease() {
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
       {
         tag_name: TAG,
-        name: `v${VERSION} - 네트워크 스캔 개선`,
+        name: `v${VERSION} - UI 개선`,
         body: releaseNotes,
         draft: true,
         prerelease: false

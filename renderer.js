@@ -33,6 +33,8 @@ let connectionCheckIntervalMs = 15000; // 연결 상태 확인 주기 (기본값
 let prescriptionProgram = 'pm3000'; // 처방조제프로그램 (기본값: PM3000)
 let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 방지)
 let pharmacyStatus = null; // 약국 승인 상태 (null, 'pending', 'active', 'rejected')
+let loginMode = null; // 로그인 모드 ('logged_in', 'no_login', null)
+let parseEnabled = false; // 파싱 기능 활성화 여부
 
 // ============================================
 // 약국 승인 상태 확인
@@ -55,9 +57,9 @@ async function checkAndUpdatePharmacyStatus() {
             return;
         }
         
-        // 토큰을 통해 상태 확인 (로컬에서만)
-        const token = await ipcRenderer.invoke('auth:get-token');
-        if (!token) {
+        // 로그인 정보 확인 (로컬에서만)
+        const loginStatus = await ipcRenderer.invoke('auth:get-token');
+        if (!loginStatus) {
             pharmacyStatus = null;
             return;
         }
@@ -287,9 +289,9 @@ async function sendParseEvent(filePath) {
             sentParseEvents.add(idempotencyKey);
             console.log('✅ 파싱 이벤트 전송 성공:', path.basename(filePath));
         } else {
-            // 토큰이 없는 경우는 로그만 남기고 진행
-            if (result.error === 'no_token') {
-                console.log('⚠️ 약국 등록이 필요합니다. 파싱 이벤트가 전송되지 않습니다.');
+            // 로그인 정보가 없는 경우는 로그만 남기고 진행
+            if (result.error === 'no_credentials' || result.error === 'no_token') {
+                console.log('⚠️ 로그인이 필요합니다. 파싱 이벤트가 전송되지 않습니다.');
             } else if (result.error && result.error.includes('승인')) {
                 console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
             } else {
@@ -494,9 +496,45 @@ function saveLogToFile() {
 // beforeunload는 main.js의 before-quit에서 처리
 // window.addEventListener('beforeunload', ...) 제거
 
+// 로그인 상태 업데이트
+async function updateLoginStatus(data) {
+    if (data && data.mode === 'no_login') {
+        loginMode = 'no_login';
+        parseEnabled = false;
+        logMessage('⚠️ 비로그인 모드: 파싱 기능이 비활성화되었습니다. 수동 전송만 가능합니다.');
+    } else {
+        // 로그인 모드 확인
+        const loginStatus = await ipcRenderer.invoke('auth:get-token');
+        if (loginStatus) {
+            loginMode = 'logged_in';
+            // 약국 상태 확인하여 파싱 기능 활성화 여부 결정
+            await checkAndUpdatePharmacyStatus();
+            // 과금 상태는 서버에서 확인해야 하므로, 일단 pharmacyStatus가 'active'면 활성화
+            parseEnabled = (pharmacyStatus === 'active');
+            if (parseEnabled) {
+                logMessage('✅ 로그인 완료: 파싱 기능이 활성화되었습니다.');
+            } else {
+                logMessage('⚠️ 로그인 완료: 과금 상태를 확인 중입니다. 파싱 기능이 제한될 수 있습니다.');
+            }
+        } else {
+            loginMode = null;
+            parseEnabled = false;
+        }
+    }
+}
+
+// 로그인 상태 변경 이벤트 리스너
+ipcRenderer.on('auth:login-status-changed', async (event, data) => {
+    console.log('[AUTH] Login status changed:', data);
+    await updateLoginStatus(data);
+});
+
 // 앱 초기화
 async function initializeApp() {
     logMessage('시럽조제기 연결 관리자가 시작되었습니다.');
+    
+    // 로그인 상태 확인
+    await updateLoginStatus();
     
     // 약국 승인 상태 확인
     await checkAndUpdatePharmacyStatus();
@@ -517,15 +555,26 @@ async function initializeApp() {
         const previousStatus = pharmacyStatus;
         await checkAndUpdatePharmacyStatus();
         
+        // 로그인 모드가 아니면 파싱 기능 비활성화
+        if (loginMode !== 'logged_in') {
+            parseEnabled = false;
+        } else {
+            // 로그인 모드면 약국 상태에 따라 파싱 기능 활성화
+            parseEnabled = (pharmacyStatus === 'active');
+        }
+        
         // 상태가 변경되었고 승인되었다면 파싱 시작
-        if (previousStatus === 'pending' && pharmacyStatus === 'active') {
+        if (previousStatus === 'pending' && pharmacyStatus === 'active' && parseEnabled) {
             logMessage('🎉 약국이 승인되었습니다! 파싱 기능이 활성화됩니다.');
             parseAllPrescriptionFiles();
         }
     }, 5 * 60 * 1000); // 5분마다
     detectNetworks();
     // 프로그램 시작 시 기존 파일들 파싱 (리스트 표시용, 이벤트 전송 제외)
-    parseAllPrescriptionFiles();
+    // 비로그인 모드가 아니고 파싱이 활성화된 경우에만 파싱
+    if (loginMode !== 'no_login' && parseEnabled) {
+        parseAllPrescriptionFiles();
+    }
     startPrescriptionMonitor();
     
     // 저장된 기기들 즉시 연결 시도
@@ -1731,7 +1780,13 @@ async function loadPrescriptionProgramSettings() {
         const filePath = await getConfigFilePath('prescription_program_settings.json');
         if (fs.existsSync(filePath)) {
             const settings = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            prescriptionProgram = settings.prescriptionProgram || 'pm3000';
+            // 유팜은 현재 비활성화 상태이므로 pm3000으로 강제 설정
+            if (settings.prescriptionProgram === 'upam') {
+                prescriptionProgram = 'pm3000';
+                logMessage('유팜은 현재 계약 진행 중으로 비활성화되어 있습니다. PM3000, 팜플러스20으로 설정됩니다.');
+            } else {
+                prescriptionProgram = settings.prescriptionProgram || 'pm3000';
+            }
             const programSelect = document.getElementById('prescriptionProgram');
             if (programSelect) {
                 programSelect.value = prescriptionProgram;
@@ -1775,6 +1830,13 @@ async function savePrescriptionProgramSettings() {
 async function onPrescriptionProgramChanged() {
     const programSelect = document.getElementById('prescriptionProgram');
     if (programSelect) {
+        // 유팜 선택 시 비활성화 처리 (계약 완료 후 활성화 예정)
+        // if (programSelect.value === 'upam') {
+        //     alert('유팜은 현재 계약 진행 중으로 사용할 수 없습니다. 계약이 완료되면 다시 활성화됩니다.');
+        //     programSelect.value = prescriptionProgram; // 이전 값으로 되돌림
+        //     return;
+        // }
+        
         prescriptionProgram = programSelect.value;
         await savePrescriptionProgramSettings();
         logMessage(`처방조제프로그램 변경됨: ${prescriptionProgram === 'pm3000' ? 'PM3000, 팜플러스20' : '유팜'}`);
@@ -1792,6 +1854,18 @@ async function onPrescriptionProgramChanged() {
 function parseAllPrescriptionFiles() {
     if (!prescriptionPath) {
         logMessage('처방전 경로가 설정되지 않았습니다.');
+        return;
+    }
+    
+    // 비로그인 모드 확인
+    if (loginMode === 'no_login') {
+        logMessage('⚠️ 비로그인 모드에서는 파싱 기능을 사용할 수 없습니다.');
+        return;
+    }
+    
+    // 파싱 기능 활성화 여부 확인
+    if (!parseEnabled) {
+        logMessage('⚠️ 파싱 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.');
         return;
     }
     
@@ -1918,7 +1992,21 @@ function parsePrescriptionFile(filePath) {
     }
     
     // 디버깅: 현재 상태 확인
-    console.log(`[파싱 체크] pharmacyStatus: ${pharmacyStatus}, 파일: ${path.basename(filePath)}`);
+    console.log(`[파싱 체크] loginMode: ${loginMode}, parseEnabled: ${parseEnabled}, pharmacyStatus: ${pharmacyStatus}, 파일: ${path.basename(filePath)}`);
+    
+    // 비로그인 모드 확인
+    if (loginMode === 'no_login') {
+        console.log(`🚫 [파싱 차단] 비로그인 모드입니다. 파일: ${path.basename(filePath)}`);
+        logMessage(`⚠️ 비로그인 모드에서는 파싱 기능을 사용할 수 없습니다. 로그인 후 파싱 기능을 사용하세요.`);
+        return;
+    }
+    
+    // 파싱 기능 활성화 여부 확인
+    if (!parseEnabled) {
+        console.log(`🚫 [파싱 차단] 파싱 기능이 비활성화되어 있습니다. 파일: ${path.basename(filePath)}`);
+        logMessage(`⚠️ 파싱 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.`);
+        return;
+    }
     
     // 약국 등록 및 승인 상태 확인
     if (pharmacyStatus === null) {

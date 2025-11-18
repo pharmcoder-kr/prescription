@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>로그인 - 오토시럽</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .login-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 450px;
+            width: 100%;
+            padding: 40px;
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .login-header .icon {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 40px;
+            color: white;
+        }
+
+        .login-header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .login-header p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .form-label {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .form-control {
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.15);
+        }
+
+        .form-text {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .form-check {
+            margin-top: 15px;
+            margin-bottom: 20px;
+        }
+
+        .form-check-input {
+            width: 18px;
+            height: 18px;
+            margin-top: 0.3em;
+            cursor: pointer;
+        }
+
+        .form-check-label {
+            font-size: 14px;
+            color: #666;
+            cursor: pointer;
+            margin-left: 5px;
+        }
+
+        .btn-login {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 14px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            color: white;
+            width: 100%;
+            margin-top: 10px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .btn-login:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-login:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-skip {
+            background: transparent;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 12px 32px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            width: 100%;
+            margin-top: 10px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-skip:hover {
+            border-color: #999;
+            color: #333;
+            background-color: #f8f9fa;
+        }
+
+        .alert-info {
+            background-color: #e3f2fd;
+            border: none;
+            border-left: 4px solid #2196f3;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            margin-bottom: 25px;
+        }
+
+        .alert-warning {
+            background-color: #fff3cd;
+            border: none;
+            border-left: 4px solid #ffc107;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            margin-top: 15px;
+            display: none;
+            color: #856404;
+        }
+
+        .spinner-border-sm {
+            width: 16px;
+            height: 16px;
+            border-width: 2px;
+        }
+
+        .error-message {
+            background-color: #ffebee;
+            border: none;
+            border-left: 4px solid #f44336;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            margin-top: 15px;
+            display: none;
+            color: #c62828;
+        }
+
+        .success-message {
+            background-color: #e8f5e9;
+            border: none;
+            border-left: 4px solid #4caf50;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            margin-top: 15px;
+            display: none;
+            color: #2e7d32;
+        }
+
+        .divider {
+            text-align: center;
+            margin: 20px 0;
+            position: relative;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: #e0e0e0;
+        }
+
+        .divider span {
+            background: white;
+            padding: 0 15px;
+            position: relative;
+            color: #999;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <div class="icon">
+                <i class="fas fa-sign-in-alt"></i>
+            </div>
+            <h1>로그인</h1>
+            <p>파싱 기능을 사용하려면 로그인이 필요합니다.</p>
+        </div>
+
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>비로그인 모드:</strong> 파싱 기능 없이 수동 전송만 사용할 수 있습니다.
+        </div>
+
+        <form id="loginForm">
+            <div class="mb-3">
+                <label for="username" class="form-label">
+                    <i class="fas fa-user me-1"></i>ID
+                </label>
+                <input type="text" class="form-control" id="username" 
+                       placeholder="아이디를 입력하세요" required>
+            </div>
+
+            <div class="mb-3">
+                <label for="password" class="form-label">
+                    <i class="fas fa-lock me-1"></i>비밀번호
+                </label>
+                <input type="password" class="form-control" id="password" 
+                       placeholder="비밀번호를 입력하세요" required>
+            </div>
+
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="rememberMe" checked>
+                <label class="form-check-label" for="rememberMe">
+                    자동 로그인 (다음 실행 시 자동으로 로그인)
+                </label>
+            </div>
+
+            <button type="submit" class="btn btn-login" id="loginBtn">
+                <i class="fas fa-sign-in-alt me-2"></i>로그인
+            </button>
+        </form>
+
+        <div class="divider">
+            <span>또는</span>
+        </div>
+
+        <button type="button" class="btn btn-skip" id="registerBtn" style="margin-bottom: 10px;">
+            <i class="fas fa-user-plus me-2"></i>회원가입
+        </button>
+
+        <button type="button" class="btn btn-skip" id="skipBtn">
+            <i class="fas fa-user-slash me-2"></i>비로그인 모드로 사용 (파싱 기능 없음)
+        </button>
+
+        <div class="alert alert-warning" id="warningMessage">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            <span id="warningText"></span>
+        </div>
+
+        <div class="error-message" id="errorMessage">
+            <i class="fas fa-exclamation-circle me-2"></i>
+            <span id="errorText"></span>
+        </div>
+
+        <div class="success-message" id="successMessage">
+            <i class="fas fa-check-circle me-2"></i>
+            <span id="successText">로그인 성공!</span>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        const form = document.getElementById('loginForm');
+        const loginBtn = document.getElementById('loginBtn');
+        const registerBtn = document.getElementById('registerBtn');
+        const skipBtn = document.getElementById('skipBtn');
+        const errorMessage = document.getElementById('errorMessage');
+        const successMessage = document.getElementById('successMessage');
+        const warningMessage = document.getElementById('warningMessage');
+        const errorText = document.getElementById('errorText');
+        const warningText = document.getElementById('warningText');
+        const rememberMe = document.getElementById('rememberMe');
+
+        // 저장된 로그인 정보 불러오기
+        window.addEventListener('DOMContentLoaded', () => {
+            ipcRenderer.invoke('auth:get-saved-credentials').then((credentials) => {
+                if (credentials && credentials.username) {
+                    document.getElementById('username').value = credentials.username;
+                    rememberMe.checked = credentials.rememberMe !== false;
+                }
+            });
+        });
+
+        // 회원가입 버튼
+        registerBtn.addEventListener('click', () => {
+            ipcRenderer.send('auth:show-register');
+        });
+
+        // 폼 제출 처리
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // 버튼 비활성화
+            loginBtn.disabled = true;
+            loginBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>로그인 중...';
+            
+            // 메시지 숨기기
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
+            warningMessage.style.display = 'none';
+
+            // 폼 데이터 수집
+            const formData = {
+                username: document.getElementById('username').value.trim(),
+                password: document.getElementById('password').value,
+                rememberMe: rememberMe.checked
+            };
+
+            // 유효성 검사
+            if (!formData.username || !formData.password) {
+                showError('ID와 비밀번호를 입력해주세요.');
+                resetButton();
+                return;
+            }
+
+            try {
+                // IPC를 통해 메인 프로세스로 전송
+                const result = await ipcRenderer.invoke('auth:login', formData);
+
+                if (result.success) {
+                    // 성공 메시지 표시
+                    if (result.billing_active) {
+                        successMessage.style.display = 'block';
+                        successMessage.innerHTML = '<i class="fas fa-check-circle me-2"></i><strong>로그인 성공!</strong> 파싱 기능을 사용할 수 있습니다.';
+                        successMessage.className = 'alert alert-success';
+                    } else {
+                        warningMessage.style.display = 'block';
+                        warningText.textContent = '로그인 성공. 과금 기간이 만료되어 파싱 기능이 제한됩니다.';
+                    }
+                    
+                    // 2초 후 창 닫기
+                    setTimeout(() => {
+                        ipcRenderer.send('auth:login-complete');
+                    }, 2000);
+                } else {
+                    // 에러 메시지에 따라 다른 처리
+                    if (result.error && result.error.includes('승인 대기')) {
+                        warningMessage.style.display = 'block';
+                        warningText.textContent = result.error;
+                    } else {
+                        showError(result.error || '로그인에 실패했습니다.');
+                    }
+                    resetButton();
+                }
+            } catch (error) {
+                console.error('로그인 오류:', error);
+                showError('네트워크 연결을 확인해주세요. ' + error.message);
+                resetButton();
+            }
+        });
+
+        // 비로그인 모드 버튼
+        skipBtn.addEventListener('click', () => {
+            if (confirm('비로그인 모드로 실행하시겠습니까?\n파싱 기능은 사용할 수 없으며, 수동 전송만 가능합니다.')) {
+                ipcRenderer.send('auth:skip-login');
+            }
+        });
+
+        // 에러 메시지 표시
+        function showError(message) {
+            errorText.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        // 버튼 리셋
+        function resetButton() {
+            loginBtn.disabled = false;
+            loginBtn.innerHTML = '<i class="fas fa-sign-in-alt me-2"></i>로그인';
+        }
+
+    </script>
+</body>
+</html>
+
