@@ -981,6 +981,62 @@ app.get('/v1/admin/processed', async (req, res) => {
   }
 });
 
+// 약국 삭제 API
+app.delete('/v1/admin/delete', async (req, res) => {
+  try {
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== ADMIN_API_KEY) {
+      return res.status(401).json({ error: '관리자 권한이 필요합니다.' });
+    }
+
+    const { pharmacy_id } = req.body;
+    
+    if (!pharmacy_id) {
+      return res.status(400).json({ 
+        error: 'pharmacy_id가 필요합니다.' 
+      });
+    }
+
+    // 약국 정보 조회 (삭제 전 로그용)
+    const { data: pharmacy, error: fetchError } = await supabase
+      .from('pharmacies')
+      .select('id, name, ykiin')
+      .eq('id', pharmacy_id)
+      .single();
+
+    if (fetchError || !pharmacy) {
+      return res.status(404).json({ error: '약국을 찾을 수 없습니다.' });
+    }
+
+    // 약국 삭제 (CASCADE로 관련 데이터 자동 삭제)
+    const { error: deleteError } = await supabase
+      .from('pharmacies')
+      .delete()
+      .eq('id', pharmacy_id);
+
+    if (deleteError) {
+      console.error('약국 삭제 실패:', deleteError);
+      return res.status(500).json({ error: '약국 삭제 실패' });
+    }
+
+    console.log(`🗑️ 약국 삭제 완료: ${pharmacy.name} (${pharmacy.ykiin})`);
+
+    res.status(200).json({
+      success: true,
+      message: '약국이 삭제되었습니다.',
+      pharmacy: {
+        id: pharmacy.id,
+        name: pharmacy.name,
+        ykiin: pharmacy.ykiin
+      }
+    });
+
+  } catch (error) {
+    console.error('약국 삭제 중 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
 // 통계 조회
 app.get('/v1/admin/stats', async (req, res) => {
   try {
@@ -1192,9 +1248,16 @@ app.listen(PORT, () => {
   console.log('===========================================');
   console.log('📋 등록된 라우트:');
   console.log('  GET  /');
+  console.log('  GET  /admin');
   console.log('  POST /v1/auth/register');
   console.log('  POST /v1/auth/login');
   console.log('  POST /v1/events/parse/batch');
+  console.log('  POST /v1/admin/approve');
+  console.log('  DELETE /v1/admin/delete');
+  console.log('  GET  /v1/admin/pending');
+  console.log('  GET  /v1/admin/processed');
+  console.log('  GET  /v1/admin/stats');
+  console.log('  GET  /v1/admin/usage');
   console.log('===========================================');
 });
 
