@@ -62,6 +62,26 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
         }
+        .table-responsive {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .table thead th {
+            position: sticky;
+            top: 0;
+            background-color: #fff;
+            z-index: 10;
+            border-bottom: 2px solid #dee2e6;
+        }
+        .table tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        .table td {
+            vertical-align: middle;
+        }
+        .action-buttons {
+            white-space: nowrap;
+        }
     </style>
 </head>
 <body>
@@ -287,29 +307,44 @@
                     if (data.data.length === 0) {
                         container.innerHTML = '<div class="text-center text-muted">승인 대기 중인 약국이 없습니다.</div>';
                     } else {
-                        container.innerHTML = data.data.map(pharmacy => `
-                            <div class="pharmacy-item">
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <div>
-                                        <h6 class="mb-1">${pharmacy.name}</h6>
-                                        <p class="mb-1 text-muted">
-                                            <i class="fas fa-id-card me-1"></i>요양기관번호: ${pharmacy.ykiin}<br>
-                                            <i class="fas fa-building me-1"></i>사업자번호: ${pharmacy.biz_no}<br>
-                                            <i class="fas fa-envelope me-1"></i>이메일: ${pharmacy.contact_email || '없음'}<br>
-                                            <i class="fas fa-clock me-1"></i>등록일: ${new Date(pharmacy.created_at).toLocaleString('ko-KR')}
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <button class="btn btn-sm btn-approve me-2" onclick="showApprovalModal('${pharmacy.id}', '${pharmacy.name}', 'approve')">
-                                            <i class="fas fa-check"></i> 승인
-                                        </button>
-                                        <button class="btn btn-sm btn-reject" onclick="showApprovalModal('${pharmacy.id}', '${pharmacy.name}', 'reject')">
-                                            <i class="fas fa-times"></i> 거부
-                                        </button>
-                                    </div>
-                                </div>
+                        container.innerHTML = `
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>약국명</th>
+                                            <th>요양기관번호</th>
+                                            <th>사업자번호</th>
+                                            <th>이메일</th>
+                                            <th>등록일</th>
+                                            <th class="text-center">작업</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.data.map(pharmacy => {
+                                            const escapedName = pharmacy.name.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ');
+                                            return `
+                                            <tr>
+                                                <td><strong>${pharmacy.name}</strong></td>
+                                                <td>${pharmacy.ykiin}</td>
+                                                <td>${pharmacy.biz_no}</td>
+                                                <td>${pharmacy.contact_email || '<span class="text-muted">없음</span>'}</td>
+                                                <td>${new Date(pharmacy.created_at).toLocaleString('ko-KR')}</td>
+                                                <td class="text-center action-buttons">
+                                                    <button class="btn btn-sm btn-approve me-2" onclick="showApprovalModal('${pharmacy.id}', '${escapedName}', 'approve')" title="승인">
+                                                        <i class="fas fa-check"></i> 승인
+                                                    </button>
+                                                    <button class="btn btn-sm btn-reject" onclick="showApprovalModal('${pharmacy.id}', '${escapedName}', 'reject')" title="거부">
+                                                        <i class="fas fa-times"></i> 거부
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
                             </div>
-                        `).join('');
+                        `;
                     }
                 } else {
                     container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
@@ -335,32 +370,46 @@
                     if (data.data.length === 0) {
                         container.innerHTML = '<div class="text-center text-muted">처리된 약국이 없습니다.</div>';
                     } else {
-                        container.innerHTML = data.data.map(pharmacy => {
-                            // 약국 이름 이스케이프 처리
-                            const escapedName = pharmacy.name.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ');
-                            return `
-                            <div class="pharmacy-item">
-                                <div class="d-flex justify-content-between align-items-start">
-                                    <div>
-                                        <h6 class="mb-1">${pharmacy.name}</h6>
-                                        <p class="mb-1 text-muted">
-                                            <i class="fas fa-id-card me-1"></i>요양기관번호: ${pharmacy.ykiin}<br>
-                                            <i class="fas fa-building me-1"></i>사업자번호: ${pharmacy.biz_no}<br>
-                                            <i class="fas fa-clock me-1"></i>처리일: ${new Date(pharmacy.last_seen_at).toLocaleString('ko-KR')}
-                                        </p>
-                                    </div>
-                                    <div class="d-flex flex-column align-items-end gap-2">
-                                        <span class="badge ${pharmacy.status === 'active' ? 'bg-success' : 'bg-danger'} status-badge">
-                                            ${pharmacy.status === 'active' ? '승인됨' : '거부됨'}
-                                        </span>
-                                        <button class="btn btn-sm btn-delete" onclick="showDeleteModal('${pharmacy.id}', '${escapedName}')" title="약국 삭제">
-                                            <i class="fas fa-trash"></i> 삭제
-                                        </button>
-                                    </div>
-                                </div>
+                        container.innerHTML = `
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>약국명</th>
+                                            <th>요양기관번호</th>
+                                            <th>사업자번호</th>
+                                            <th>상태</th>
+                                            <th>처리일</th>
+                                            <th class="text-center">작업</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${data.data.map(pharmacy => {
+                                            // 약국 이름 이스케이프 처리
+                                            const escapedName = pharmacy.name.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ');
+                                            return `
+                                            <tr>
+                                                <td><strong>${pharmacy.name}</strong></td>
+                                                <td>${pharmacy.ykiin}</td>
+                                                <td>${pharmacy.biz_no}</td>
+                                                <td>
+                                                    <span class="badge ${pharmacy.status === 'active' ? 'bg-success' : 'bg-danger'} status-badge">
+                                                        ${pharmacy.status === 'active' ? '승인됨' : '거부됨'}
+                                                    </span>
+                                                </td>
+                                                <td>${new Date(pharmacy.last_seen_at).toLocaleString('ko-KR')}</td>
+                                                <td class="text-center action-buttons">
+                                                    <button class="btn btn-sm btn-delete" onclick="showDeleteModal('${pharmacy.id}', '${escapedName}')" title="약국 삭제">
+                                                        <i class="fas fa-trash"></i> 삭제
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
                             </div>
-                            `;
-                        }).join('');
+                        `;
                     }
                 } else {
                     container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
