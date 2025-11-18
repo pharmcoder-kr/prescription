@@ -702,21 +702,21 @@ app.post('/v1/events/parse/batch', async (req, res) => {
       });
     }
 
-    // 약국 승인 상태 확인
-    const { data: pharmacy, error: pharmacyError } = await supabase
+    // 약국 승인 상태 확인 (pharmacy 변수는 이미 위에서 선언되었으므로 pharmacyStatus로 변경)
+    const { data: pharmacyStatus, error: pharmacyStatusError } = await supabase
       .from('pharmacies')
       .select('status')
       .eq('id', pharmacy_id)
       .single();
 
-    if (pharmacyError || !pharmacy) {
+    if (pharmacyStatusError || !pharmacyStatus) {
       return res.status(404).json({ error: '약국 정보를 찾을 수 없습니다.' });
     }
 
-    if (pharmacy.status !== 'active') {
+    if (pharmacyStatus.status !== 'active') {
       return res.status(403).json({ 
         error: '관리자 승인이 필요합니다. 승인 후 사용 가능합니다.',
-        status: pharmacy.status
+        status: pharmacyStatus.status
       });
     }
 
