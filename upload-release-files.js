@@ -1,6 +1,5 @@
 const axios = require('axios');
 const fs = require('fs');
-const path = require('path');
 
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
@@ -8,60 +7,26 @@ const REPO = 'prescription';
 const VERSION = '1.3.10';
 const TAG = `v${VERSION}`;
 
-async function createRelease() {
+async function uploadReleaseFiles() {
   if (!GITHUB_TOKEN) {
     console.error('❌ GitHub Token이 필요합니다!');
     console.error('환경 변수 GH_TOKEN 또는 GITHUB_TOKEN을 설정해주세요.');
     process.exit(1);
   }
 
-  const releaseNotes = `## 주요 변경사항
-
-### 🐛 버그 수정
-- **로그인/회원가입 창 누락 문제 해결**: 빌드에 login.html과 register.html 파일이 포함되지 않던 문제 수정
-- **아이콘 표시 문제 해결**: 기본 Electron 아이콘 대신 지정한 아이콘이 표시되도록 수정
-- **업데이트 후 바탕화면 아이콘 사라짐 문제 해결**: 업데이트 후에도 바탕화면 바로가기 아이콘이 유지되도록 수정
-
-### 🔧 빌드 개선
-- package.json의 files 배열에 login.html과 register.html 추가
-- NSIS 설정에 shortcutIconPath 추가로 바로가기 아이콘 명시적 설정
-- differentialPackage를 false로 변경하여 업데이트 시 아이콘 유지
-
-### 🆕 새로운 기능 (이전 버전)
-- **월간 사용량 CSV 다운로드**: 관리자 대시보드에서 월간 사용량 데이터를 CSV 파일로 다운로드 가능
-- **월간 사용량 약국 수 표시**: 해당 월에 처방연동 기능을 사용한 약국 수를 실시간으로 표시
-- **동적 월 선택**: 현재 월부터 과거 12개월까지 자동으로 선택 가능
-
-### 🔧 개선사항 (이전 버전)
-- **파싱 이벤트 시간대 개선**: 파싱 이벤트가 한국 시간대(KST)로 저장되어 Supabase에서 정확한 시간 확인 가능
-- **월간 사용량 조회 개선**: 하드코딩된 월 선택을 동적 생성으로 변경하여 최신 월 자동 포함
-
-## 설치 방법
-아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
-
-## 업데이트 방법
-기존 사용자는 프로그램 실행 시 자동으로 업데이트 알림을 받습니다.`;
-
   try {
     console.log('===========================================');
-    console.log('📦 GitHub Release 생성 시작');
+    console.log('📤 GitHub Release 파일 업로드');
     console.log('===========================================');
     console.log(`Repository: ${OWNER}/${REPO}`);
     console.log(`Version: ${VERSION}`);
     console.log(`Tag: ${TAG}`);
     console.log('');
-
-    // 1. Draft Release 생성
-    console.log('1️⃣  Draft Release 생성 중...');
-    const releaseResponse = await axios.post(
+    
+    // 1. 기존 Release 정보 가져오기
+    console.log('1️⃣  기존 Release 정보 가져오기...');
+    const releasesResponse = await axios.get(
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
-      {
-        tag_name: TAG,
-        name: `v${VERSION} - 빌드 및 아이콘 문제 수정`,
-        body: releaseNotes,
-        draft: true,
-        prerelease: false
-      },
       {
         headers: {
           'Authorization': `token ${GITHUB_TOKEN}`,
@@ -69,13 +34,34 @@ async function createRelease() {
         }
       }
     );
-
-    const releaseId = releaseResponse.data.id;
-    const uploadUrl = releaseResponse.data.upload_url.replace('{?name,label}', '');
-    console.log(`✅ Draft Release 생성 완료 (ID: ${releaseId})`);
+    
+    // Draft 릴리즈도 포함하여 찾기
+    let release = releasesResponse.data.find(r => r.tag_name === TAG);
+    
+    // Draft 릴리즈가 있으면 그것을 사용
+    if (!release) {
+      release = releasesResponse.data.find(r => r.draft === true && r.tag_name === TAG);
+    }
+    
+    // 태그가 없지만 이름에 버전이 있는 경우도 확인
+    if (!release) {
+      release = releasesResponse.data.find(r => r.name && r.name.includes(VERSION));
+    }
+    
+    if (!release) {
+      console.error(`❌ ${TAG} 릴리즈를 찾을 수 없습니다.`);
+      console.error('사용 가능한 릴리즈:');
+      releasesResponse.data.slice(0, 5).forEach(r => {
+        console.error(`   - ${r.tag_name || 'no tag'} (${r.draft ? 'Draft' : 'Published'}): ${r.name}`);
+      });
+      return;
+    }
+    
+    console.log(`✅ Release 발견 (ID: ${release.id})`);
+    console.log(`   URL: ${release.html_url}`);
     console.log('');
-
-    // 2. 파일 업로드
+    
+    // 2. 업로드할 파일 목록
     const filesToUpload = [
       {
         path: `release/auto-syrup-setup-${VERSION}.exe`,
@@ -93,20 +79,38 @@ async function createRelease() {
         contentType: 'text/yaml'
       }
     ];
-
+    
+    const uploadUrl = release.upload_url.replace('{?name,label}', '');
+    
+    // 3. 파일 업로드
     console.log('2️⃣  파일 업로드 중...');
     for (const file of filesToUpload) {
       if (!fs.existsSync(file.path)) {
         console.log(`⚠️  파일 없음: ${file.path}`);
         continue;
       }
-
+      
+      // 기존 파일이 있으면 삭제
+      const existingAsset = release.assets.find(asset => asset.name === file.name);
+      if (existingAsset) {
+        console.log(`   기존 파일 삭제: ${file.name}`);
+        await axios.delete(
+          `https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${existingAsset.id}`,
+          {
+            headers: {
+              'Authorization': `token ${GITHUB_TOKEN}`,
+              'Accept': 'application/vnd.github.v3+json'
+            }
+          }
+        );
+      }
+      
       const fileData = fs.readFileSync(file.path);
       const fileSize = fs.statSync(file.path).size;
       const fileSizeMB = (fileSize / 1024 / 1024).toFixed(2);
-
+      
       console.log(`   업로드: ${file.name} (${fileSizeMB} MB)`);
-
+      
       await axios.post(
         `${uploadUrl}?name=${encodeURIComponent(file.name)}`,
         fileData,
@@ -120,26 +124,24 @@ async function createRelease() {
           maxBodyLength: Infinity
         }
       );
-
+      
       console.log(`   ✅ 업로드 완료: ${file.name}`);
     }
-
+    
     console.log('');
     console.log('===========================================');
-    console.log('✅ Release 생성 완료!');
+    console.log('✅ 파일 업로드 완료!');
     console.log('===========================================');
     console.log('');
     console.log('🔗 Release URL:');
-    console.log(`   ${releaseResponse.data.html_url}`);
+    console.log(`   ${release.html_url}`);
     console.log('');
-    console.log('💡 다음 단계:');
-    console.log('   1. 위 URL로 이동하여 Release 내용 확인');
-    console.log('   2. "Publish release" 버튼 클릭하여 공개');
+    console.log('💡 이제 자동 업데이트가 정상 작동할 것입니다!');
     console.log('');
-
+    
   } catch (error) {
     console.error('');
-    console.error('❌ Release 생성 실패:', error.message);
+    console.error('❌ 파일 업로드 실패:', error.message);
     if (error.response) {
       console.error('상태 코드:', error.response.status);
       console.error('응답 데이터:', JSON.stringify(error.response.data, null, 2));
@@ -148,5 +150,5 @@ async function createRelease() {
   }
 }
 
-createRelease();
+uploadReleaseFiles();
 

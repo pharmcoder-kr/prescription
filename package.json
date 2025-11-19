@@ -1,6 +1,6 @@
 {
   "name": "auto-syrup",
-  "version": "1.3.9",
+  "version": "1.3.10",
   "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
