@@ -121,7 +121,6 @@
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "shortcutName": "오토시럽",
-      "shortcutIconPath": "assets/icon.ico",
       "runAfterFinish": false,
       "menuCategory": false
     },
