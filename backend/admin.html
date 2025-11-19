@@ -180,9 +180,7 @@
                         <div class="row mb-3">
                             <div class="col-md-4">
                                 <select class="form-select" id="monthSelect">
-                                    <option value="2025-10">2025년 10월</option>
-                                    <option value="2025-09">2025년 9월</option>
-                                    <option value="2025-08">2025년 8월</option>
+                                    <!-- 동적으로 생성됨 -->
                                 </select>
                             </div>
                             <div class="col-md-4">
@@ -265,8 +263,38 @@
         const ADMIN_KEY = 'my-secret-admin-key-123';
         let currentPharmacyId = null;
 
+        // 월 선택 드롭다운 동적 생성 (최근 12개월)
+        function populateMonthSelect() {
+            const monthSelect = document.getElementById('monthSelect');
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth(); // 0-11
+            
+            // 현재 월부터 과거 12개월 생성
+            for (let i = 0; i < 12; i++) {
+                const date = new Date(currentYear, currentMonth - i, 1);
+                const year = date.getFullYear();
+                const month = date.getMonth() + 1; // 1-12
+                const monthStr = String(month).padStart(2, '0');
+                const value = `${year}-${monthStr}`;
+                const label = `${year}년 ${month}월`;
+                
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                
+                // 현재 월을 기본 선택
+                if (i === 0) {
+                    option.selected = true;
+                }
+                
+                monthSelect.appendChild(option);
+            }
+        }
+
         // 페이지 로드 시 초기화
         document.addEventListener('DOMContentLoaded', function() {
+            populateMonthSelect(); // 월 선택 드롭다운 생성
             loadStats();
             loadPendingPharmacies();
             loadProcessedPharmacies();

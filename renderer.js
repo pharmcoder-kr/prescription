@@ -73,7 +73,7 @@ async function checkAndUpdatePharmacyStatus() {
             console.log(`[상태 확인] pharmacyStatus 설정됨: ${pharmacyStatus}`);
             
             if (pharmacyStatus === 'pending') {
-                logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
+                logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 처방전연동 기능이 활성화됩니다.');
             } else if (pharmacyStatus === 'active') {
                 logMessage('✅ 약국 승인 완료 - 모든 기능 사용 가능');
             } else if (pharmacyStatus === 'rejected') {
@@ -100,9 +100,9 @@ async function refreshPharmacyStatus() {
     
     console.log('[수동 새로고침] 새 상태:', pharmacyStatus);
     
-    // 상태가 변경되었고 승인되었다면 파싱 시작
+    // 상태가 변경되었고 승인되었다면 처방전연동 시작
     if (previousStatus === 'pending' && pharmacyStatus === 'active') {
-        logMessage('🎉 약국이 승인되었습니다! 파싱 기능이 활성화됩니다.');
+        logMessage('🎉 약국이 승인되었습니다! 처방전연동 기능이 활성화됩니다.');
         parseAllPrescriptionFiles();
     }
     
@@ -205,6 +205,21 @@ function getDeviceUidSync() {
     return 'unknown-device';
 }
 
+/**
+ * 한국 시간대(KST, UTC+9)로 ISO 문자열 생성
+ * @returns {string} 한국 시간대 ISO 문자열 (예: 2025-11-19T10:39:23.427+09:00)
+ */
+function getKSTISOString() {
+    const now = new Date();
+    // 한국 시간대는 UTC+9
+    const kstOffset = 9 * 60; // 분 단위
+    const kstTime = new Date(now.getTime() + (kstOffset * 60 * 1000));
+    
+    // ISO 문자열 생성 후 시간대를 +09:00으로 변경
+    const isoString = kstTime.toISOString();
+    return isoString.replace('Z', '+09:00');
+}
+
 
 /**
  * 앱 종료 시 모든 이벤트 전송
@@ -232,7 +247,7 @@ async function sendAllPendingEvents() {
                 source: 'pharmIT3000',
                 count: 1,
                 idempotency_key: `${deviceUid}_batch_${Date.now()}_${i}`,
-                ts: new Date().toISOString(),
+                ts: getKSTISOString(), // 한국 시간대 사용
                 filePath: `batch_${i}` // 더미 경로
             });
         }
@@ -279,7 +294,7 @@ async function sendParseEvent(filePath) {
             source: 'pharmIT3000',
             count: 1,
             idempotency_key: idempotencyKey,
-            ts: new Date().toISOString()
+            ts: getKSTISOString() // 한국 시간대 사용
         };
         
         // IPC를 통해 메인 프로세스로 전송
@@ -287,20 +302,20 @@ async function sendParseEvent(filePath) {
         
         if (result.success) {
             sentParseEvents.add(idempotencyKey);
-            console.log('✅ 파싱 이벤트 전송 성공:', path.basename(filePath));
+            console.log('✅ 처방전연동 이벤트 전송 성공:', path.basename(filePath));
         } else {
             // 로그인 정보가 없는 경우는 로그만 남기고 진행
             if (result.error === 'no_credentials' || result.error === 'no_token') {
-                console.log('⚠️ 로그인이 필요합니다. 파싱 이벤트가 전송되지 않습니다.');
+                console.log('⚠️ 로그인이 필요합니다. 처방전연동 이벤트가 전송되지 않습니다.');
             } else if (result.error && result.error.includes('승인')) {
-                console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 파싱 이벤트가 전송됩니다.');
+                console.log('⚠️ 약국 승인 대기 중입니다. 승인 후 처방전연동 이벤트가 전송됩니다.');
             } else {
-                console.warn('⚠️ 파싱 이벤트 전송 실패:', result.error);
+                console.warn('⚠️ 처방전연동 이벤트 전송 실패:', result.error);
             }
         }
     } catch (error) {
         // 에러가 발생해도 앱 사용에는 지장 없음
-        console.error('❌ 파싱 이벤트 전송 중 오류:', error);
+        console.error('❌ 처방전연동 이벤트 전송 중 오류:', error);
     }
 }
 
@@ -501,7 +516,24 @@ async function updateLoginStatus(data) {
     if (data && data.mode === 'no_login') {
         loginMode = 'no_login';
         parseEnabled = false;
-        logMessage('⚠️ 비로그인 모드: 파싱 기능이 비활성화되었습니다. 수동 전송만 가능합니다.');
+        logMessage('⚠️ 비로그인 모드: 처방전연동 기능이 비활성화되었습니다. 수동 전송만 가능합니다.');
+        
+        // 비로그인 모드일 때 기존 데이터 초기화
+        parsedFiles = new Set();
+        parsedPrescriptions = {};
+        initializeEmptyTables();
+        
+        // 수동조제 화면으로 전환
+        showManualPage();
+        
+        // 메인 버튼 비활성화
+        const mainButton = document.querySelector('button[onclick="showMainPage()"]');
+        if (mainButton) {
+            mainButton.disabled = true;
+            mainButton.classList.add('disabled');
+            mainButton.style.opacity = '0.5';
+            mainButton.style.cursor = 'not-allowed';
+        }
     } else {
         // 로그인 모드 확인
         const loginStatus = await ipcRenderer.invoke('auth:get-token');
@@ -512,9 +544,18 @@ async function updateLoginStatus(data) {
             // 과금 상태는 서버에서 확인해야 하므로, 일단 pharmacyStatus가 'active'면 활성화
             parseEnabled = (pharmacyStatus === 'active');
             if (parseEnabled) {
-                logMessage('✅ 로그인 완료: 파싱 기능이 활성화되었습니다.');
+                logMessage('✅ 로그인 완료: 처방전연동 기능이 활성화되었습니다.');
             } else {
-                logMessage('⚠️ 로그인 완료: 과금 상태를 확인 중입니다. 파싱 기능이 제한될 수 있습니다.');
+                logMessage('⚠️ 로그인 완료: 과금 상태를 확인 중입니다. 처방전연동 기능이 제한될 수 있습니다.');
+            }
+            
+            // 메인 버튼 활성화
+            const mainButton = document.querySelector('button[onclick="showMainPage()"]');
+            if (mainButton) {
+                mainButton.disabled = false;
+                mainButton.classList.remove('disabled');
+                mainButton.style.opacity = '1';
+                mainButton.style.cursor = 'pointer';
             }
         } else {
             loginMode = null;
@@ -539,8 +580,15 @@ async function initializeApp() {
     // 약국 승인 상태 확인
     await checkAndUpdatePharmacyStatus();
     
-    // parsedFiles 불러오기 (프로그램 시작 시)
-    loadParsedFiles();
+    // 비로그인 모드가 아니면 parsedFiles 불러오기 (프로그램 시작 시)
+    if (loginMode !== 'no_login') {
+        loadParsedFiles();
+    } else {
+        // 비로그인 모드일 때는 데이터를 불러오지 않음
+        parsedFiles = new Set();
+        parsedPrescriptions = {};
+        logMessage('ℹ️ 비로그인 모드: 기존 데이터를 불러오지 않습니다.');
+    }
     
     await loadPrescriptionPath();
     await loadConnections(); // 저장된 연결 정보 로드
@@ -563,15 +611,15 @@ async function initializeApp() {
             parseEnabled = (pharmacyStatus === 'active');
         }
         
-        // 상태가 변경되었고 승인되었다면 파싱 시작
+        // 상태가 변경되었고 승인되었다면 처방전연동 시작
         if (previousStatus === 'pending' && pharmacyStatus === 'active' && parseEnabled) {
-            logMessage('🎉 약국이 승인되었습니다! 파싱 기능이 활성화됩니다.');
+            logMessage('🎉 약국이 승인되었습니다! 처방전연동 기능이 활성화됩니다.');
             parseAllPrescriptionFiles();
         }
     }, 5 * 60 * 1000); // 5분마다
     detectNetworks();
-    // 프로그램 시작 시 기존 파일들 파싱 (리스트 표시용, 이벤트 전송 제외)
-    // 비로그인 모드가 아니고 파싱이 활성화된 경우에만 파싱
+    // 프로그램 시작 시 기존 파일들 처방전연동 (리스트 표시용, 이벤트 전송 제외)
+    // 비로그인 모드가 아니고 처방전연동이 활성화된 경우에만 실행
     if (loginMode !== 'no_login' && parseEnabled) {
         parseAllPrescriptionFiles();
     }
@@ -581,6 +629,19 @@ async function initializeApp() {
     attemptInitialConnection();
     
     startPeriodicTasks(); // 주기적 작업 시작 (자동 연결 포함)
+    
+    // 비로그인 모드일 때 첫 화면을 수동조제로 설정
+    if (loginMode === 'no_login') {
+        showManualPage();
+        // 메인 버튼 비활성화
+        const mainButton = document.querySelector('button[onclick="showMainPage()"]');
+        if (mainButton) {
+            mainButton.disabled = true;
+            mainButton.classList.add('disabled');
+            mainButton.style.opacity = '0.5';
+            mainButton.style.cursor = 'not-allowed';
+        }
+    }
 
     // datePicker 값이 비어있으면 오늘 날짜로 세팅
     if (!elements.datePicker.value) {
@@ -725,6 +786,12 @@ function setupDatePicker() {
 
 // 페이지 전환
 function showMainPage() {
+    // 비로그인 모드일 때는 메인 페이지로 이동 불가
+    if (loginMode === 'no_login') {
+        logMessage('⚠️ 비로그인 모드에서는 메인 페이지를 사용할 수 없습니다. 수동조제만 가능합니다.');
+        return;
+    }
+    
     elements.mainPage.style.display = 'block';
     elements.networkPage.style.display = 'none';
     // 수동조제 페이지도 반드시 숨김
@@ -1859,24 +1926,24 @@ function parseAllPrescriptionFiles() {
     
     // 비로그인 모드 확인
     if (loginMode === 'no_login') {
-        logMessage('⚠️ 비로그인 모드에서는 파싱 기능을 사용할 수 없습니다.');
+        logMessage('⚠️ 비로그인 모드에서는 처방전연동 기능을 사용할 수 없습니다.');
         return;
     }
     
     // 파싱 기능 활성화 여부 확인
     if (!parseEnabled) {
-        logMessage('⚠️ 파싱 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.');
+        logMessage('⚠️ 처방전연동 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.');
         return;
     }
     
     // 약국 등록 및 승인 상태 확인
     if (pharmacyStatus === null) {
-        logMessage('⚠️ 약국 등록이 필요합니다. 등록 후 파싱 기능을 사용할 수 있습니다.');
+        logMessage('⚠️ 약국 등록이 필요합니다. 등록 후 처방전연동 기능을 사용할 수 있습니다.');
         return;
     }
     
     if (pharmacyStatus === 'pending') {
-        logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 파싱 기능이 활성화됩니다.');
+        logMessage('⚠️ 약국 승인 대기 중입니다. 관리자 승인 후 처방전연동 기능이 활성화됩니다.');
         return;
     }
     
@@ -1885,7 +1952,7 @@ function parseAllPrescriptionFiles() {
         return;
     }
     
-    logMessage(`처방전 파일 파싱 시작: ${prescriptionPath}`);
+    logMessage(`처방전 파일 처방전연동 시작: ${prescriptionPath}`);
     
     try {
         // 선택된 프로그램에 따라 파일 확장자 결정
@@ -1903,14 +1970,14 @@ function parseAllPrescriptionFiles() {
             parsePrescriptionFile(filePath); // 파싱 수행
         });
         
-        logMessage(`파싱된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
+        logMessage(`처방전연동된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
         Object.keys(parsedPrescriptions).forEach(key => {
-            logMessage(`파싱된 처방전: ${key} -> ${parsedPrescriptions[key].patient.receipt_time}`);
+            logMessage(`처방전연동된 처방전: ${key} -> ${parsedPrescriptions[key].patient.receipt_time}`);
         });
         
         filterPatientsByDate();
     } catch (error) {
-        logMessage(`처방전 파일 파싱 중 오류: ${error.message}`);
+        logMessage(`처방전 파일 처방전연동 중 오류: ${error.message}`);
     }
 }
 
@@ -1978,7 +2045,7 @@ function parsePrescriptionFileWithoutEvent(filePath) {
             console.log(`❌ 파트 수 부족으로 파싱 실패: ${path.basename(filePath)}`);
         }
     } catch (error) {
-        logMessage(`파일 파싱 중 오류: ${error.message}`);
+        logMessage(`파일 처방전연동 중 오류: ${error.message}`);
     }
 }
 
@@ -1997,33 +2064,33 @@ function parsePrescriptionFile(filePath) {
     // 비로그인 모드 확인
     if (loginMode === 'no_login') {
         console.log(`🚫 [파싱 차단] 비로그인 모드입니다. 파일: ${path.basename(filePath)}`);
-        logMessage(`⚠️ 비로그인 모드에서는 파싱 기능을 사용할 수 없습니다. 로그인 후 파싱 기능을 사용하세요.`);
+        logMessage(`⚠️ 비로그인 모드에서는 처방전연동 기능을 사용할 수 없습니다. 로그인 후 처방전연동 기능을 사용하세요.`);
         return;
     }
     
     // 파싱 기능 활성화 여부 확인
     if (!parseEnabled) {
         console.log(`🚫 [파싱 차단] 파싱 기능이 비활성화되어 있습니다. 파일: ${path.basename(filePath)}`);
-        logMessage(`⚠️ 파싱 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.`);
+        logMessage(`⚠️ 처방전연동 기능이 비활성화되어 있습니다. 과금 상태를 확인해주세요.`);
         return;
     }
     
     // 약국 등록 및 승인 상태 확인
     if (pharmacyStatus === null) {
         console.log(`❌ [파싱 차단] pharmacyStatus가 null입니다. 파일: ${path.basename(filePath)}`);
-        logMessage(`⚠️ 약국 등록이 필요합니다. 파일 '${path.basename(filePath)}'은 등록 후 파싱됩니다.`);
+        logMessage(`⚠️ 약국 등록이 필요합니다. 파일 '${path.basename(filePath)}'은 등록 후 처방전연동됩니다.`);
         return;
     }
     
     if (pharmacyStatus === 'pending') {
         console.log(`⏳ [파싱 차단] pharmacyStatus가 pending입니다. 파일: ${path.basename(filePath)}`);
-        logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 파싱됩니다.`);
+        logMessage(`⚠️ 약국 승인 대기 중입니다. 파일 '${path.basename(filePath)}'은 승인 후 처방전연동됩니다.`);
         return;
     }
     
     if (pharmacyStatus === 'rejected') {
         console.log(`🚫 [파싱 차단] pharmacyStatus가 rejected입니다. 파일: ${path.basename(filePath)}`);
-        logMessage(`❌ 약국 등록이 거부되었습니다. 파싱 기능을 사용할 수 없습니다.`);
+        logMessage(`❌ 약국 등록이 거부되었습니다. 처방전연동 기능을 사용할 수 없습니다.`);
         return;
     }
     
@@ -2111,7 +2178,7 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
-            logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
+            logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 처방전연동 완료 (시간: ${receiptTime})`);
             
         } else {
             // 유팜 - XML 파일 파싱
@@ -2124,7 +2191,7 @@ function parsePrescriptionFile(filePath) {
             const ptntNmMatch = content.match(/<PtntNm>([^<]+)<\/PtntNm>/);
             
             if (!orderNumMatch || !ptntNmMatch) {
-                logMessage(`유팜 XML 파일 파싱 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
+                logMessage(`유팜 XML 파일 처방전연동 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
                 return;
             }
             
@@ -2204,13 +2271,13 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
-            logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 파싱 완료 (시간: ${receiptTime})`);
+            logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 처방전연동 완료 (시간: ${receiptTime})`);
         }
         
         // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경
         // 여기서는 즉시 startDispensing을 호출하지 않음
     } catch (error) {
-        logMessage(`파일 파싱 중 오류: ${error.message}`);
+        logMessage(`파일 처방전연동 중 오류: ${error.message}`);
     }
 }
 
