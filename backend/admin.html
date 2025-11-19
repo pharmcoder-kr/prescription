@@ -188,6 +188,11 @@
                                     <i class="fas fa-search me-2"></i>조회
                                 </button>
                             </div>
+                            <div class="col-md-4">
+                                <div id="pharmacyCountDisplay" class="mt-2">
+                                    <strong class="text-primary"></strong>
+                                </div>
+                            </div>
                         </div>
                         <div id="usageList" class="loading">
                             <i class="fas fa-spinner fa-spin me-2"></i>로딩 중...
@@ -451,8 +456,15 @@
         // 월간 사용량 로드
         async function loadMonthlyUsage() {
             const container = document.getElementById('usageList');
+            const countDisplay = document.getElementById('pharmacyCountDisplay');
             const month = document.getElementById('monthSelect').value;
+            const monthSelect = document.getElementById('monthSelect');
+            const selectedOption = monthSelect.options[monthSelect.selectedIndex];
+            const monthLabel = selectedOption.textContent; // 예: "2025년 11월"
+            const monthNumber = monthLabel.match(/(\d+)월/)[1]; // "11" 추출
+            
             container.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>로딩 중...';
+            countDisplay.innerHTML = '<strong class="text-primary">로딩 중...</strong>';
 
             try {
                 const response = await fetch(`${API_BASE}/v1/admin/usage?month=${month}`, {
@@ -461,6 +473,10 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    // 약국 수 계산 및 표시
+                    const pharmacyCount = data.data.length;
+                    countDisplay.innerHTML = `<strong class="text-primary">${monthNumber}월 처방연동기능 사용 약국의 수 : ${pharmacyCount}개</strong>`;
+                    
                     if (data.data.length === 0) {
                         container.innerHTML = '<div class="text-center text-muted">해당 월의 사용량 데이터가 없습니다.</div>';
                     } else {
@@ -493,10 +509,12 @@
                     }
                 } else {
                     container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+                    countDisplay.innerHTML = '';
                 }
             } catch (error) {
                 console.error('월간 사용량 로드 실패:', error);
                 container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
+                countDisplay.innerHTML = '';
             }
         }
 
