@@ -189,8 +189,13 @@
                                 </button>
                             </div>
                             <div class="col-md-4">
-                                <div id="pharmacyCountDisplay" class="mt-2">
-                                    <strong class="text-primary"></strong>
+                                <div class="d-flex align-items-center gap-2 mt-2">
+                                    <div id="pharmacyCountDisplay">
+                                        <strong class="text-primary"></strong>
+                                    </div>
+                                    <button class="btn btn-sm btn-success" id="exportCsvBtn" onclick="exportToCSV()" style="display: none;">
+                                        <i class="fas fa-file-excel me-1"></i>엑셀출력
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -267,6 +272,7 @@
         const API_BASE = window.location.origin;
         const ADMIN_KEY = 'my-secret-admin-key-123';
         let currentPharmacyId = null;
+        let currentUsageData = []; // 현재 로드된 월간 사용량 데이터 저장
 
         // 월 선택 드롭다운 동적 생성 (최근 12개월)
         function populateMonthSelect() {
@@ -473,9 +479,20 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    // 데이터 저장 (CSV 다운로드용)
+                    currentUsageData = data.data;
+                    
                     // 약국 수 계산 및 표시
                     const pharmacyCount = data.data.length;
                     countDisplay.innerHTML = `<strong class="text-primary">${monthNumber}월 처방연동기능 사용 약국의 수 : ${pharmacyCount}개</strong>`;
+                    
+                    // 엑셀출력 버튼 표시/숨김
+                    const exportBtn = document.getElementById('exportCsvBtn');
+                    if (data.data.length > 0) {
+                        exportBtn.style.display = 'inline-block';
+                    } else {
+                        exportBtn.style.display = 'none';
+                    }
                     
                     if (data.data.length === 0) {
                         container.innerHTML = '<div class="text-center text-muted">해당 월의 사용량 데이터가 없습니다.</div>';
@@ -510,12 +527,63 @@
                 } else {
                     container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
                     countDisplay.innerHTML = '';
+                    document.getElementById('exportCsvBtn').style.display = 'none';
+                    currentUsageData = [];
                 }
             } catch (error) {
                 console.error('월간 사용량 로드 실패:', error);
                 container.innerHTML = '<div class="text-center text-danger">로딩 실패</div>';
                 countDisplay.innerHTML = '';
+                document.getElementById('exportCsvBtn').style.display = 'none';
+                currentUsageData = [];
             }
+        }
+
+        // CSV 다운로드 함수
+        function exportToCSV() {
+            if (currentUsageData.length === 0) {
+                alert('다운로드할 데이터가 없습니다.');
+                return;
+            }
+
+            const monthSelect = document.getElementById('monthSelect');
+            const selectedOption = monthSelect.options[monthSelect.selectedIndex];
+            const monthLabel = selectedOption.textContent; // 예: "2025년 11월"
+            
+            // CSV 헤더
+            const headers = ['약국명', '요양기관번호', '사업자번호', '이메일', '파싱 횟수', '첫 사용', '마지막 사용'];
+            
+            // CSV 데이터 생성
+            const csvRows = [];
+            csvRows.push(headers.join(','));
+            
+            currentUsageData.forEach(usage => {
+                const row = [
+                    `"${(usage.pharmacy.name || '').replace(/"/g, '""')}"`,
+                    usage.pharmacy.ykiin || '',
+                    usage.pharmacy.biz_no || '',
+                    usage.pharmacy.contact_email || '',
+                    usage.parse_count || 0,
+                    new Date(usage.first_seen).toLocaleDateString('ko-KR'),
+                    new Date(usage.last_seen).toLocaleDateString('ko-KR')
+                ];
+                csvRows.push(row.join(','));
+            });
+            
+            // BOM 추가 (한글 깨짐 방지)
+            const BOM = '\uFEFF';
+            const csvContent = BOM + csvRows.join('\n');
+            
+            // 파일 다운로드
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `월간사용량_${monthLabel.replace(/\s/g, '')}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
 
         // 승인 모달 표시
