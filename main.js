@@ -472,7 +472,7 @@ async function loginPharmacy(credentials) {
     console.log('📤 로그인 요청:', { username: loginData.username });
 
     const response = await axios.post(`${API_BASE}/v1/auth/login`, loginData, {
-      timeout: 10000,
+      timeout: 60000, // 60초로 증가 (Render.com 스핀업 대기)
       headers: { 'Content-Type': 'application/json' }
     });
 
@@ -515,20 +515,29 @@ async function loginPharmacy(credentials) {
     if (error.response) {
       const status = error.response.status;
       const data = error.response.data;
+      const headers = error.response.headers || {};
       
       if (status === 401) {
         errorMessage = data?.error || 'ID 또는 비밀번호가 올바르지 않습니다.';
       } else if (status === 403) {
         errorMessage = data?.error || '관리자 승인이 필요합니다.';
+      } else if (status === 503) {
+        // Render.com SLEEP 모드
+        const routingHeader = headers['x-render-routing'] || headers['X-Render-Routing'] || '';
+        if (routingHeader.includes('hibernate')) {
+          errorMessage = '서버가 깨어나는 중입니다.\n잠시 후 다시 시도해주세요. (약 30초 소요)';
+        } else {
+          errorMessage = '서버가 일시적으로 사용할 수 없습니다.\n잠시 후 다시 시도해주세요.';
+        }
       } else {
         errorMessage = data?.error || errorMessage;
       }
     } else if (error.code === 'ECONNREFUSED') {
       errorMessage = '서버에 연결할 수 없습니다. 인터넷 연결을 확인해주세요.';
-    } else if (error.code === 'ETIMEDOUT') {
-      errorMessage = '서버 응답 시간이 초과되었습니다.';
+    } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+      errorMessage = '서버 응답 시간이 초과되었습니다.\nRender.com 서버가 SLEEP 모드일 수 있습니다. 잠시 후 다시 시도해주세요.';
     } else {
-      errorMessage = error.message;
+      errorMessage = error.message || errorMessage;
     }
     
     return { success: false, error: errorMessage };
@@ -543,7 +552,7 @@ function showPendingNotification() {
     type: 'info',
     title: '알림',
     message: '약국 승인 대기 중',
-    detail: '등록이 완료되었습니다. 관리자 승인 후 파싱 이벤트가 전송됩니다.\n\n프로그램은 정상적으로 사용 가능합니다.',
+    detail: '등록이 완료되었습니다. 관리자 승인 후 처방전연동 이벤트가 전송됩니다.\n\n프로그램은 정상적으로 사용 가능합니다.',
     buttons: ['확인'],
     noLink: true
   });
@@ -557,7 +566,7 @@ function showApprovalCompletedNotification() {
     type: 'info',
     title: '승인 완료!',
     message: '약국 등록이 승인되었습니다! 🎉',
-    detail: '이제 모든 기능을 정상적으로 사용할 수 있습니다.\n파싱 이벤트가 서버로 전송됩니다.',
+    detail: '이제 모든 기능을 정상적으로 사용할 수 있습니다.\n처방전연동 이벤트가 서버로 전송됩니다.',
     buttons: ['확인'],
     noLink: true
   });
@@ -592,6 +601,9 @@ function createLoginWindow() {
     return;
   }
 
+  // 로그인 성공 여부 추적 (창 닫기 시 비로그인 모드로 전환 여부 결정)
+  let loginSucceeded = false;
+
   loginWindow = new BrowserWindow({
     width: 500,
     height: 650,
@@ -616,7 +628,20 @@ function createLoginWindow() {
     }
   });
 
+  // 로그인 성공 이벤트 리스너
+  ipcMain.once('auth:login-complete', () => {
+    loginSucceeded = true;
+  });
+
   loginWindow.on('closed', () => {
+    // 로그인 성공하지 않고 창이 닫혔을 때만 비로그인 모드로 진행
+    if (!loginSucceeded) {
+      console.log('⚠️ 로그인 창이 닫혔습니다. 비로그인 모드로 진행합니다.');
+      // 렌더러에 비로그인 모드 알림
+      if (mainWindow) {
+        mainWindow.webContents.send('auth:login-status-changed', { mode: 'no_login' });
+      }
+    }
     loginWindow = null;
   });
 }
@@ -699,8 +724,19 @@ function getIconPath() {
     // 개발 모드: 현재 디렉토리의 assets 폴더 사용
     return path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
   } else {
-    // 프로덕션 모드: process.resourcesPath/assets 사용
-    return path.join(process.resourcesPath, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+    // 프로덕션 모드: extraResources로 복사된 assets 폴더 사용
+    // process.resourcesPath는 extraResources가 복사되는 경로
+    const iconPath = path.join(process.resourcesPath, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+    
+    // 파일이 없으면 app.getAppPath()에서도 시도
+    if (!fs.existsSync(iconPath)) {
+      const altPath = path.join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+      if (fs.existsSync(altPath)) {
+        return altPath;
+      }
+    }
+    
+    return iconPath;
   }
 }
 
@@ -1112,7 +1148,8 @@ ipcMain.handle('download-update', async () => {
 
 ipcMain.handle('install-update', () => {
   // 앱을 종료하고 업데이트 설치
-  autoUpdater.quitAndInstall(false, true);
+  // 두 번째 파라미터를 false로 설정하여 정상 설치 프로세스 사용 (바탕화면 아이콘 유지)
+  autoUpdater.quitAndInstall(false, false);
 });
 
 ipcMain.handle('get-app-version', () => {

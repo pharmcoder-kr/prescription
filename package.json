@@ -1,6 +1,6 @@
 {
   "name": "auto-syrup",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
@@ -64,6 +64,8 @@
       "renderer.js",
       "index.html",
       "enroll.html",
+      "login.html",
+      "register.html",
       "preload.js",
       "styles.css",
       "gui-editor.js",
@@ -115,13 +117,13 @@
       "createStartMenuShortcut": true,
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "differentialPackage": true,
+      "differentialPackage": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "shortcutName": "오토시럽",
+      "shortcutIconPath": "assets/icon.ico",
       "runAfterFinish": false,
-      "menuCategory": false,
-      "include": "build/installer.nsh"
+      "menuCategory": false
     },
     "forceCodeSigning": false,
     "cscLink": null,
