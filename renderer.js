@@ -2664,30 +2664,28 @@ function processNextInQueue() {
     
     logMessage(`대기열에서 처방전 처리 시작: ${receiptNumber} (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
     
-    // 환자 행 찾기 및 선택
-    setTimeout(() => {
-        const row = document.querySelector(`#patientTableBody tr[data-receipt-number="${receiptNumber}"]`);
-        if (row) {
-            // 기존 선택 해제
-            document.querySelectorAll('#patientTableBody tr').forEach(r => r.classList.remove('table-primary'));
-            row.classList.add('table-primary');
-            
-            // 약물 정보 로드
-            loadPatientMedicines(receiptNumber);
-            logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
-            
-            // 약물 정보 로드 후 조제 시작 (processNextInQueue에서 호출된 경우이므로 직접 startDispensingInternal 호출)
-            setTimeout(() => {
-                logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
-                startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
-            }, 200);
-        } else {
-            logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
-            // 플래그 해제 후 다음 항목 처리
-            isAutoDispensingInProgress = false;
-            processNextInQueue();
-        }
-    }, 100);
+    // 환자 행 찾기 및 선택 (지연 최소화)
+    const row = document.querySelector(`#patientTableBody tr[data-receipt-number="${receiptNumber}"]`);
+    if (row) {
+        // 기존 선택 해제
+        document.querySelectorAll('#patientTableBody tr').forEach(r => r.classList.remove('table-primary'));
+        row.classList.add('table-primary');
+        
+        // 약물 정보 로드
+        loadPatientMedicines(receiptNumber);
+        logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
+        
+        // 약물 정보 로드 후 조제 시작 (최소 지연으로 DOM 업데이트 대기)
+        setTimeout(() => {
+            logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
+            startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
+        }, 50); // 200ms → 50ms로 단축
+    } else {
+        logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
+        // 플래그 해제 후 다음 항목 처리
+        isAutoDispensingInProgress = false;
+        processNextInQueue();
+    }
 }
 
 // 조제 시작
@@ -3462,6 +3460,13 @@ async function checkConnectionStatus() {
         // 연결 상태 변경 후 약물 색상 갱신
         updateMedicineColors();
         
+        // 연결 상태가 "연결됨"으로 변경된 경우 대기열 확인 및 처리
+        // 조제가 진행 중이 아니고 대기열에 처방전이 있으면 처리 시도
+        if (allConnected && autoDispensingQueue.length > 0 && !isAutoDispensingInProgress) {
+            logMessage('연결 상태 확인: 모든 기기가 연결됨 - 대기열 처리 시도');
+            processNextInQueue();
+        }
+        
     } catch (error) {
         logMessage(`연결 상태 확인 중 오류: ${error.message}`);
     } finally {
@@ -3598,7 +3603,19 @@ function startPrescriptionMonitor() {
                                 return;
                             }
                             
-                            // 현재 연결되어 있지는 않더라도, 등록된 기기가 있으면 대기열에 추가하여 조제 종료 후 처리
+                            // 등록된 기기가 있는지 확인 (연결 상태와 무관하게 즉시 처리 시도)
+                            const hasRegisteredDevice = prescription.medicines.some(med => {
+                                return Object.values(connectedDevices).some(device => 
+                                    device.pill_code === med.pill_code
+                                );
+                            });
+                            
+                            if (!hasRegisteredDevice) {
+                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기가 없습니다.`);
+                                return;
+                            }
+                            
+                            // 현재 연결 상태 확인 (정보 제공용)
                             const hasConnectedOrBusyDevice = prescription.medicines.some(med => {
                                 return Object.values(connectedDevices).some(device => 
                                     device.pill_code === med.pill_code && 
@@ -3607,7 +3624,7 @@ function startPrescriptionMonitor() {
                             });
                             
                             if (!hasConnectedOrBusyDevice) {
-                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기는 있으나 현재 연결 대기 상태입니다. 대기열에 추가하고 기기가 준비되면 전송합니다.`);
+                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기는 있으나 현재 연결 대기 상태입니다. 대기열에 추가하고 즉시 처리 시도합니다.`);
                             }
                             
                             // 대기열에 이미 있는지 확인 (중복 방지)
@@ -3620,7 +3637,7 @@ function startPrescriptionMonitor() {
                             autoDispensingQueue.push(receiptNumber);
                             logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 대기열에 추가되었습니다. (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
                             
-                            // 대기열이 비어있었고 조제가 진행 중이 아니면 즉시 처리
+                            // 대기열이 비어있었고 조제가 진행 중이 아니면 즉시 처리 (연결 상태와 무관)
                             // 대기열에 이미 처방전이 있으면 순서대로 처리됨
                             if (autoDispensingQueue.length === 1 && !isAutoDispensingInProgress) {
                                 processNextInQueue();

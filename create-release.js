@@ -5,7 +5,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.21';
+const VERSION = '1.3.22';
 const TAG = `v${VERSION}`;
 
 async function createRelease() {
@@ -17,12 +17,17 @@ async function createRelease() {
 
   const releaseNotes = `## 주요 변경사항
 
-### ⚡ 성능 개선
-- **조제 완료 후 지연 시간 단축**: 조제 완료 후 연결 상태 확인 지연 시간을 60초에서 5초로 단축하여 다음 처방전 처리가 더 빠르게 시작됩니다.
+### ⚡ 자동조제 성능 개선
+- **자동조제 지연 문제 해결**: 자동조제 시 발생하던 지연 문제를 해결하여 수동조제와 동일한 속도로 전송됩니다.
+  - 기기 연결 대기 상태에서도 즉시 조제 시작 (기존: 연결 대기 시 지연)
+  - 연결 상태 확인 시 대기열 자동 처리 추가
+  - setTimeout 지연 시간 단축 (300ms → 50ms)
+
+### 🔧 개선 사항
+- **조제 완료 후 지연 시간 단축**: 조제 완료 후 연결 상태 확인 지연 시간을 60초에서 5초로 단축
   - 일반 조제 시작 시 지연 시간: 60초 → 5초
   - 재전송 시 지연 시간: 60초 → 5초
   - 실패한 약물 재전송 시 지연 시간: 60초 → 5초
-  - 조제 완료 시 지연이 자동으로 취소되므로 실제로는 조제 완료까지의 시간만 영향을 받습니다.
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -45,7 +50,7 @@ async function createRelease() {
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
       {
         tag_name: TAG,
-        name: `v${VERSION} - 조제 완료 후 지연 시간 단축`,
+        name: `v${VERSION} - 자동조제 성능 개선`,
         body: releaseNotes,
         draft: true,
         prerelease: false
