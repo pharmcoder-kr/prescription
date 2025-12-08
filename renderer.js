@@ -29,6 +29,7 @@ let connectionCheckDelayTimer = null; // 연결 상태 확인 지연 타이머
 let isDispensingInProgress = false; // 조제 진행 중 플래그
 let dispensingDevices = new Set(); // 조제 중인 기기들의 IP 주소 집합
 let isAutoDispensingInProgress = false; // 자동조제 진행 중 플래그 (중복 실행 방지)
+let autoDispensingQueue = []; // 자동조제 대기열 (처방전 접수번호 배열)
 let connectionCheckIntervalMs = 15000; // 연결 상태 확인 주기 (기본값: 15초)
 let prescriptionProgram = 'pm3000'; // 처방조제프로그램 (기본값: PM3000)
 let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 방지)
@@ -121,7 +122,8 @@ window.testSaveLog = saveLogToFile; // 테스트용
 // ============================================
 
 // 앱 종료 시 전송을 위한 카운터
-let newFileParseCount = 0; // 새로 파싱된 파일 개수
+let newFileParseCount = 0; // 새로 파싱된 파일 개수 (로그인 이후에만 카운트)
+let isLoggedInSession = false; // 로그인 세션 플래그 (로그인 이후에만 true)
 
 // parsedFiles를 로컬에 저장/불러오기
 const PARSED_FILES_PATH = path.join(require('os').homedir(), 'AppData', 'Roaming', 'auto-syrup', 'parsed-files.json');
@@ -339,6 +341,7 @@ async function getDeviceUid() {
 // 전송 상태 헬퍼 함수들
 function getStatusText(status) {
     if (status === '등록되지 않은 약물') return '등록되지 않은 약물';
+    if (status === '최대량 초과') return '최대량 초과';
     if (typeof status === 'number') {
         if (status === 0 || !isFinite(status)) return '0'; // -Infinity, Infinity, NaN 처리
         return status.toString();
@@ -348,6 +351,7 @@ function getStatusText(status) {
 
 function getStatusBadgeClass(status) {
     if (status === '등록되지 않은 약물') return 'bg-dark';
+    if (status === '최대량 초과') return 'bg-warning';
     if (typeof status === 'number') {
         if (status === 0 || !isFinite(status)) return 'bg-secondary'; // -Infinity, Infinity, NaN 처리
         return 'bg-success';
@@ -516,6 +520,8 @@ async function updateLoginStatus(data) {
     if (data && data.mode === 'no_login') {
         loginMode = 'no_login';
         parseEnabled = false;
+        isLoggedInSession = false; // 비로그인 모드에서는 로그인 세션 플래그 false
+        newFileParseCount = 0; // 비로그인 모드로 전환 시 카운터 초기화
         logMessage('⚠️ 비로그인 모드: 처방전연동 기능이 비활성화되었습니다. 수동 전송만 가능합니다.');
         
         // 비로그인 모드일 때 기존 데이터 초기화
@@ -539,6 +545,17 @@ async function updateLoginStatus(data) {
         const loginStatus = await ipcRenderer.invoke('auth:get-token');
         if (loginStatus) {
             loginMode = 'logged_in';
+            
+            // 로그인 성공 시 파싱 카운터 초기화 (로그인 이후 파싱된 파일만 카운트)
+            const previousLoginState = isLoggedInSession;
+            isLoggedInSession = true;
+            if (!previousLoginState) {
+                // 새로 로그인한 경우 카운터 초기화
+                newFileParseCount = 0;
+                console.log('[AUTH] 로그인 완료 - 파싱 카운터 초기화');
+                logMessage('✅ 로그인 완료: 로그인 이후 파싱된 파일만 카운트됩니다.');
+            }
+            
             // 약국 상태 확인하여 파싱 기능 활성화 여부 결정
             await checkAndUpdatePharmacyStatus();
             // 과금 상태는 서버에서 확인해야 하므로, 일단 pharmacyStatus가 'active'면 활성화
@@ -560,6 +577,7 @@ async function updateLoginStatus(data) {
         } else {
             loginMode = null;
             parseEnabled = false;
+            isLoggedInSession = false; // 로그아웃 상태로 설정
         }
     }
 }
@@ -987,20 +1005,23 @@ function onNetworkChanged() {
 
 // 주기적 스캔 스케줄링
 function scheduleScan() {
-    scanNetwork();
+    scanNetwork(true); // 정기 스캔은 silent 모드
     scanInterval = setTimeout(scheduleScan, 10000); // 10초마다 스캔 (5초에서 변경)
 }
 
 // 네트워크 스캔 (arduino_connector.py 방식 적용)
-async function scanNetwork() {
+async function scanNetwork(silent = false) {
     if (!networkPrefix) {
-        logMessage('네트워크 프리픽스가 설정되지 않았습니다.');
+        if (!silent) {
+            logMessage('네트워크 프리픽스가 설정되지 않았습니다.');
+        }
         updateScanStatus('네트워크 프리픽스 없음', 'error');
         return;
     }
     
-    logMessage(`네트워크 스캔 시작: ${networkPrefix}0/24`);
-    logMessage(`현재 네트워크 프리픽스: ${networkPrefix}`);
+    if (!silent) {
+        logMessage(`네트워크 스캔 시작: ${networkPrefix}0/24`);
+    }
     updateScanStatus('스캔 중...', 'scanning');
     
     // 기존에 발견된 기기들을 유지하기 위해 현재 테이블의 기기 정보를 저장
@@ -1017,8 +1038,6 @@ async function scanNetwork() {
             });
         }
     });
-    
-    logMessage(`기존 테이블 기기 수: ${existingDevices.size}`);
     
     const results = {};
     const threads = [];
@@ -1074,16 +1093,23 @@ async function scanNetwork() {
     // 모든 스캔 완료 대기
     await Promise.all(threads);
     
-    // 스캔 결과 로그 출력
-    logMessage(`=== 스캔 결과 전체 ===`);
+    // 스캔 결과 로그 출력 (수동 스캔일 때만)
     let validDeviceCount = 0;
     for (const [ip, data] of Object.entries(results)) {
         if (data && data.mac) {
             validDeviceCount++;
-            logMessage(`유효한 기기 발견: ${ip} - MAC: ${data.mac} - 상태: ${data.status || 'ready'}`);
         }
     }
-    logMessage(`총 유효한 기기 수: ${validDeviceCount}`);
+    
+    if (!silent) {
+        logMessage(`=== 스캔 결과 전체 ===`);
+        for (const [ip, data] of Object.entries(results)) {
+            if (data && data.mac) {
+                logMessage(`유효한 기기 발견: ${ip} - MAC: ${data.mac} - 상태: ${data.status || 'ready'}`);
+            }
+        }
+        logMessage(`총 유효한 기기 수: ${validDeviceCount}`);
+    }
     
     // 발견된 기기들 처리
     const foundDevices = {};
@@ -1094,33 +1120,23 @@ async function scanNetwork() {
             const mac = data.mac;
             const normalizedMac = normalizeMac(mac);
             
-            logMessage(`처리 중: ${ip} (MAC: ${mac} -> 정규화: ${normalizedMac})`);
-            
             // IP 주소가 현재 네트워크 프리픽스와 일치하는지 확인
             // networkPrefix는 "172.30.1." 형태이므로 IP 주소가 이로 시작하는지 확인
             if (ip.startsWith(networkPrefix)) {
-                logMessage(`네트워크 범위 내 기기 발견: ${ip} (MAC: ${mac})`);
-                
                 // 중복 MAC 주소 처리 (같은 MAC이 여러 IP에서 발견되면 첫 번째만 유지)
                 if (!uniqueDevices.has(normalizedMac)) {
                     uniqueDevices.set(normalizedMac, { ip, data, originalMac: mac });
                     foundDevices[normalizedMac] = ip;
-                    logMessage(`foundDevices에 추가: ${normalizedMac} -> ${ip}`);
-                } else {
-                    logMessage(`중복 MAC 주소 발견: ${mac} (기존: ${uniqueDevices.get(normalizedMac).ip}, 새로: ${ip})`);
                 }
-            } else {
-                logMessage(`네트워크 범위 외 기기 무시: ${ip} (MAC: ${mac}) - 현재 프리픽스: ${networkPrefix}`);
-                logMessage(`IP 시작 부분: ${ip.substring(0, networkPrefix.length)}, 프리픽스: ${networkPrefix}`);
             }
         }
     }
     
-    logMessage(`네트워크 범위 내 발견된 기기 수: ${uniqueDevices.size}`);
-    logMessage(`foundDevices 최종 내용: ${JSON.stringify(foundDevices)}`);
-    
     // 네트워크 테이블 업데이트 (기존 기기 유지하면서 새로운 기기 추가)
-    logMessage(`=== 네트워크 테이블 업데이트 ===`);
+    if (!silent) {
+        logMessage(`네트워크 범위 내 발견된 기기 수: ${uniqueDevices.size}`);
+        logMessage(`=== 네트워크 테이블 업데이트 ===`);
+    }
     
     // 기존 테이블에서 빈 행만 제거
     const emptyRows = elements.networkTableBody.querySelectorAll('tr.empty-row');
@@ -1133,19 +1149,20 @@ async function scanNetwork() {
         // 이미 테이블에 있는 기기인지 확인
         const existingDevice = existingDevices.get(originalMac);
         if (existingDevice) {
-            logMessage(`기존 기기 업데이트: ${ip} (MAC: ${originalMac})`);
+            // IP가 변경된 경우에만 로그 출력
+            if (existingDevice.ip !== ip && !silent) {
+                logMessage(`기존 기기 IP 업데이트: ${existingDevice.ip} -> ${ip} (MAC: ${originalMac})`);
+            }
             // 기존 행의 IP 업데이트
             existingDevice.row.cells[0].textContent = ip;
             
             // 상태는 현재 조제 중인 경우에만 보존하고, 그 외에는 새로운 상태로 업데이트
             const currentStatus = existingDevice.row.cells[2].textContent;
             if (currentStatus === "시럽 조제 중") {
-                logMessage(`조제 중인 기기 상태 보존: ${ip} - 상태: ${currentStatus}`);
                 // 조제 중인 상태 유지
                 // connectedDevices에서도 상태 보존
                 for (const [deviceMac, deviceInfo] of Object.entries(connectedDevices)) {
                     if (normalizeMac(deviceMac) === normalizedMac && deviceInfo.status === "시럽 조제 중") {
-                        logMessage(`연결된 기기 목록에서도 조제 중 상태 보존: ${deviceInfo.nickname}`);
                         break;
                     }
                 }
@@ -1163,7 +1180,10 @@ async function scanNetwork() {
             
             existingDevices.delete(originalMac); // 처리 완료 표시
         } else {
-            logMessage(`새로운 기기 추가: ${ip} (MAC: ${originalMac})`);
+            // 새로운 기기가 발견된 경우에만 로그 출력
+            if (!silent) {
+                logMessage(`새로운 기기 발견: ${ip} (MAC: ${originalMac})`);
+            }
             
             // 이미 저장된 연결인지 확인
             const isSaved = Object.keys(savedConnections).some(savedMac => 
@@ -1174,8 +1194,6 @@ async function scanNetwork() {
             const isConnected = Object.keys(connectedDevices).some(connectedMac => 
                 normalizeMac(connectedMac) === normalizedMac
             );
-            
-            logMessage(`기기 상태 확인 - 저장됨: ${isSaved}, 연결됨: ${isConnected}`);
             
             const row = document.createElement('tr');
             row.innerHTML = `
@@ -1196,7 +1214,6 @@ async function scanNetwork() {
                 </td>
             `;
             elements.networkTableBody.appendChild(row);
-            logMessage(`테이블 행 추가 완료: ${ip} (MAC: ${originalMac})`);
         }
     });
     
@@ -1208,11 +1225,12 @@ async function scanNetwork() {
         );
         
         if (isConnectedDevice) {
-            logMessage(`연결된 기기는 제거하지 않음: ${deviceInfo.ip} (MAC: ${mac})`);
             // 연결된 기기는 상태를 "일시적 응답 없음"으로 변경하되 테이블에서 제거하지 않음
             deviceInfo.row.cells[2].textContent = "일시적 응답 없음";
         } else {
-            logMessage(`응답하지 않는 기기 제거: ${deviceInfo.ip} (MAC: ${mac})`);
+            if (!silent) {
+                logMessage(`응답하지 않는 기기 제거: ${deviceInfo.ip} (MAC: ${mac})`);
+            }
             deviceInfo.row.remove();
         }
     });
@@ -1234,7 +1252,9 @@ async function scanNetwork() {
         elements.networkTableBody.appendChild(emptyRow);
     }
     
-    logMessage(`스캔 완료: ${uniqueDevices.size}개 기기 발견 (총 테이블 기기 수: ${elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length})`);
+    if (!silent) {
+        logMessage(`스캔 완료: ${uniqueDevices.size}개 기기 발견 (총 테이블 기기 수: ${elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length})`);
+    }
     
     // 스캔 완료 상태 업데이트
     if (uniqueDevices.size > 0) {
@@ -1244,44 +1264,28 @@ async function scanNetwork() {
     }
     
     // 자동 재연결 시도
-    await attemptAutoReconnect(foundDevices);
+    await attemptAutoReconnect(foundDevices, silent);
 }
 
 // 자동 재연결 시도 (arduino_connector.py 방식)
-async function attemptAutoReconnect(foundDevices) {
+async function attemptAutoReconnect(foundDevices, silent = false) {
     // MAC 주소 정규화 함수
     const normalizeMac = (macStr) => {
         return macStr.replace(/[:\-]/g, '').toUpperCase();
     };
     
-    logMessage(`자동 재연결 시도 시작 - 저장된 기기 수: ${Object.keys(savedConnections).length}`);
-    logMessage(`발견된 기기들: ${JSON.stringify(foundDevices)}`);
-    
-    // 발견된 기기들의 상세 정보 출력
-    logMessage(`=== 발견된 기기 상세 정보 ===`);
-    for (const [normalizedMac, ip] of Object.entries(foundDevices)) {
-        logMessage(`MAC: ${normalizedMac} -> IP: ${ip}`);
-    }
-    logMessage(`=== 저장된 기기 상세 정보 ===`);
-    for (const [savedMac, info] of Object.entries(savedConnections)) {
-        const normalizedSavedMac = normalizeMac(savedMac);
-        logMessage(`저장된 MAC: ${savedMac} -> 정규화: ${normalizedSavedMac} -> IP: ${info.ip} -> 별명: ${info.nickname}`);
-    }
+    let hasReconnectAttempt = false;
     
     for (const [savedMac, info] of Object.entries(savedConnections)) {
         const normalizedSavedMac = normalizeMac(savedMac);
-        
-        logMessage(`검사 중: ${info.nickname} (${savedMac} -> ${normalizedSavedMac})`);
         
         // 이미 연결되었거나 재연결 시도한 기기는 건너뛰기
         if (connectedDevices[savedMac]) {
-            logMessage(`이미 연결됨: ${info.nickname}`);
             continue;
         }
         
         // 수동으로 연결을 끊은 기기는 자동 재연결하지 않음
         if (manuallyDisconnectedDevices.has(savedMac)) {
-            logMessage(`수동으로 연결을 끊은 기기이므로 자동 재연결하지 않음: ${info.nickname}`);
             continue;
         }
         
@@ -1290,13 +1294,13 @@ async function attemptAutoReconnect(foundDevices) {
             autoReconnectAttempted.get(normalizedSavedMac) : 0;
         
         if (attemptCount >= 3) {
-            logMessage(`재연결 시도 횟수 초과 (3회): ${info.nickname}`);
             continue;
         }
         
         // 발견된 기기 목록에서 MAC 주소로 찾기 (정규화된 MAC으로 비교)
         const foundIP = foundDevices[normalizedSavedMac];
         if (foundIP) {
+            hasReconnectAttempt = true;
             logMessage(`자동 재연결 시도 (${attemptCount + 1}/3): ${info.nickname} (${savedMac}) -> ${foundIP}`);
             
             // IP 업데이트
@@ -1312,13 +1316,13 @@ async function attemptAutoReconnect(foundDevices) {
                 autoReconnectAttempted.set(normalizedSavedMac, attemptCount + 1);
                 logMessage(`자동 재연결 실패 (${attemptCount + 1}/3): ${info.nickname} (${foundIP})`);
             }
-        } else {
-            logMessage(`발견된 기기 목록에 없음: ${info.nickname} (${normalizedSavedMac})`);
-            logMessage(`현재 저장된 IP: ${info.ip}, 발견된 기기 IP들: ${Object.values(foundDevices).join(', ')}`);
         }
     }
     
-    logMessage(`자동 재연결 시도 완료`);
+    // 실제로 재연결 시도가 있었을 때만 완료 메시지 출력
+    if (hasReconnectAttempt && !silent) {
+        // 로그는 이미 위에서 출력됨
+    }
 }
 
 // MAC 주소로 기기 연결
@@ -1368,6 +1372,13 @@ async function connectToDeviceByMac(mac, silent = false) {
                         pill_code: deviceInfo.pill_code || '',
                         status: '연결됨'
                     };
+
+                        // 수동 해제 목록에 남아있다면 연결 성공 시 제거하여 이후 자동연결/재연결 대상에 포함
+                        if (manuallyDisconnectedDevices.has(mac)) {
+                            manuallyDisconnectedDevices.delete(mac);
+                            await saveConnections();
+                            logMessage(`수동 해제 목록에서 제거: ${deviceInfo.nickname}`);
+                        }
                     
                     updateConnectedTable();
                     updateMedicineColors();
@@ -2107,23 +2118,58 @@ function parsePrescriptionFile(filePath) {
         if (prescriptionProgram === 'pm3000') {
             // PM3000, 팜플러스20 - TXT 파일 파싱
             let decoded = false;
+            let bestContent = null;
+            let bestEncoding = 'utf8';
             // 인코딩 우선순위: cp949 → euc-kr → utf8
             const encodings = ['cp949', 'euc-kr', 'utf8'];
 
             for (const encoding of encodings) {
                 try {
-                    content = iconv.decode(buffer, encoding);
-                    // 한글이 포함되어 있는지 확인 (더 엄격하게)
-                    if (/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(content)) {
+                    const testContent = iconv.decode(buffer, encoding);
+                    // 첫 번째 줄(환자명) 추출
+                    const firstLine = testContent.split('\n')[0]?.trim() || '';
+                    
+                    // 첫 줄이 유효한지 확인 (빈 줄이 아니고, 너무 짧지 않음)
+                    if (firstLine.length === 0 || firstLine.length > 100) {
+                        continue;
+                    }
+                    
+                    // 깨진 문자 확인 (인코딩 오류 시 나타나는 특수 문자들)
+                    const hasBrokenChars = /[\uFFFD\u0000-\u001F\u007F-\u009F]/.test(firstLine);
+                    if (hasBrokenChars) {
+                        continue; // 깨진 문자가 있으면 이 인코딩은 제외
+                    }
+                    
+                    // 한글이 포함되어 있는지 확인
+                    const hasKorean = /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(firstLine);
+                    
+                    if (hasKorean) {
+                        // 한글이 제대로 보이면 이 인코딩 사용
+                        content = testContent;
+                        bestContent = testContent;
+                        bestEncoding = encoding;
                         decoded = true;
+                        logMessage(`인코딩 자동 감지: ${encoding} (환자명: ${firstLine})`);
                         break;
+                    } else if (!decoded) {
+                        // 한글이 없어도 깨지지 않았으면 후보로 저장
+                        bestContent = testContent;
+                        bestEncoding = encoding;
                     }
                 } catch (error) {
                     continue;
                 }
             }
+            
             if (!decoded) {
-                content = iconv.decode(buffer, 'utf8');
+                // 디코딩 실패 시 최선의 후보 사용 또는 utf8 기본값
+                if (bestContent) {
+                    content = bestContent;
+                    logMessage(`인코딩 자동 감지: ${bestEncoding} (한글 미검출, 첫 줄 유효성 확인)`);
+                } else {
+                    content = iconv.decode(buffer, 'utf8');
+                    logMessage('인코딩 자동 감지 실패: utf8 기본값 사용');
+                }
             }
 
             const lines = content.toString().split('\n').filter(line => line.trim());
@@ -2147,8 +2193,27 @@ function parsePrescriptionFile(filePath) {
             const receiptTime = stats.birthtime.getTime() > 0 ? creationTime : currentTime;
             
             const medicines = lines.slice(1).map((line, index) => {
-                const parts = line.trim().split('\\');
-                if (parts.length >= 8) {
+                // 백슬래시로 split 시도
+                let parts = line.trim().split('\\');
+                
+                if (parts.length === 7) {
+                    // 팜플러스20 형식: 7개 필드 (pill_code, pill_name, volume, daily, period, date, line_number)
+                    // total이 없으므로 계산
+                    const volume = parseInt(parts[2]) || 0;
+                    const daily = parseInt(parts[3]) || 0;
+                    const period = parseInt(parts[4]) || 0;
+                    return {
+                        pill_code: parts[0],
+                        pill_name: parts[1],
+                        volume: volume,
+                        daily: daily,
+                        period: period,
+                        total: volume * daily * period, // total은 계산
+                        date: parts[5],
+                        line_number: parseInt(parts[6]) || (index + 1)
+                    };
+                } else if (parts.length >= 8) {
+                    // PM3000 형식: 8개 필드 (pill_code, pill_name, volume, daily, period, total, date, line_number)
                     return {
                         pill_code: parts[0],
                         pill_name: parts[1],
@@ -2159,7 +2224,28 @@ function parsePrescriptionFile(filePath) {
                         date: parts[6],
                         line_number: parseInt(parts[7])
                     };
+                } else if (line.includes('₩')) {
+                    // 원화 기호를 구분자로 사용하는 경우 (7개 필드)
+                    parts = line.trim().split('₩');
+                    if (parts.length >= 7) {
+                        const volume = parseInt(parts[2]) || 0;
+                        const daily = parseInt(parts[3]) || 0;
+                        const period = parseInt(parts[4]) || 0;
+                        return {
+                            pill_code: parts[0],
+                            pill_name: parts[1],
+                            volume: volume,
+                            daily: daily,
+                            period: period,
+                            total: volume * daily * period,
+                            date: parts[5],
+                            line_number: parseInt(parts[6]) || (index + 1)
+                        };
+                    }
                 }
+                
+                // 파싱 실패 시 로그 출력
+                logMessage(`약물 파싱 실패: ${line.substring(0, 50)}... (필드 수: ${parts.length})`);
                 return null;
             }).filter(medicine => medicine !== null);
             
@@ -2552,6 +2638,58 @@ function updateMedicineColors() {
     console.log('=== 약물 색상 업데이트 완료 ===');
 }
 
+// 대기열에서 다음 처방전 처리
+function processNextInQueue() {
+    if (autoDispensingQueue.length === 0) {
+        return; // 대기열이 비어있으면 종료
+    }
+    
+    if (isAutoDispensingInProgress) {
+        return; // 이미 조제가 진행 중이면 대기
+    }
+    
+    // 플래그를 즉시 설정하여 중복 실행 방지 (경쟁 조건 방지)
+    isAutoDispensingInProgress = true;
+    
+    const receiptNumber = autoDispensingQueue.shift(); // 대기열에서 첫 번째 항목 제거
+    const prescription = parsedPrescriptions[receiptNumber];
+    
+    if (!prescription) {
+        logMessage(`대기열에서 처방전을 찾을 수 없음: ${receiptNumber}`);
+        // 플래그 해제 후 다음 항목 처리
+        isAutoDispensingInProgress = false;
+        processNextInQueue();
+        return;
+    }
+    
+    logMessage(`대기열에서 처방전 처리 시작: ${receiptNumber} (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
+    
+    // 환자 행 찾기 및 선택
+    setTimeout(() => {
+        const row = document.querySelector(`#patientTableBody tr[data-receipt-number="${receiptNumber}"]`);
+        if (row) {
+            // 기존 선택 해제
+            document.querySelectorAll('#patientTableBody tr').forEach(r => r.classList.remove('table-primary'));
+            row.classList.add('table-primary');
+            
+            // 약물 정보 로드
+            loadPatientMedicines(receiptNumber);
+            logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
+            
+            // 약물 정보 로드 후 조제 시작 (processNextInQueue에서 호출된 경우이므로 직접 startDispensingInternal 호출)
+            setTimeout(() => {
+                logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
+                startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
+            }, 200);
+        } else {
+            logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
+            // 플래그 해제 후 다음 항목 처리
+            isAutoDispensingInProgress = false;
+            processNextInQueue();
+        }
+    }, 100);
+}
+
 // 조제 시작
 async function startDispensing(isAuto = false) {
     // 자동조제 중복 실행 방지
@@ -2599,11 +2737,26 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     const prescription = parsedPrescriptions[receiptNumber];
     if (!prescription) {
         showMessage('error', '처방전 정보를 찾을 수 없습니다.');
+        // 자동조제 흐름이 비정상 종료될 때 대기열 진행이 멈추지 않도록 복구
+        isDispensingInProgress = false;
+        if (isAuto) {
+            isAutoDispensingInProgress = false;
+            processNextInQueue();
+        }
         return;
     }
     
     if (Object.keys(connectedDevices).length === 0) {
         showMessage('warning', '연결된 시럽조제기가 없습니다.');
+        // 연결된 기기가 없을 때 플래그와 연결 확인 주기를 원복하고 다음 항목 처리
+        isDispensingInProgress = false;
+        dispensingDevices.clear();
+        cancelConnectionCheckDelay();
+        setNormalConnectionCheck();
+        if (isAuto) {
+            isAutoDispensingInProgress = false;
+            processNextInQueue();
+        }
         return;
     }
     
@@ -2615,7 +2768,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     // 조제 진행 중 플래그 설정 및 연결 상태 확인 지연 시작
     isDispensingInProgress = true;
     dispensingDevices.clear(); // 조제 중인 기기 목록 초기화
-    startConnectionCheckDelay(60); // 60초 동안 연결 상태 확인 지연
+    startConnectionCheckDelay(5); // 5초 동안 연결 상태 확인 지연
     
     // 자동조제 모드일 때는 모든 등록된 약물을 자동으로 선택
     if (isAuto) {
@@ -2637,9 +2790,21 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     if (selectedMedicines.length === 0) {
         if (isAuto) {
             logMessage('자동조제: 선택 가능한 약물이 없습니다. (모든 약물이 등록되지 않았거나 연결되지 않음)');
+            // 자동조제에서 선택 약물이 없을 때 플래그 원복 및 다음 처방전 진행
+            isDispensingInProgress = false;
+            dispensingDevices.clear();
+            cancelConnectionCheckDelay();
+            setNormalConnectionCheck();
+            isAutoDispensingInProgress = false;
+            processNextInQueue();
             return;
         } else {
             showMessage('warning', '전송할 약물을 선택해주세요.');
+            // 수동 조제에서도 진행 플래그와 연결 확인 주기를 복구
+            isDispensingInProgress = false;
+            dispensingDevices.clear();
+            cancelConnectionCheckDelay();
+            setNormalConnectionCheck();
             return;
         }
     }
@@ -2671,13 +2836,10 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     // 최대량을 초과하는 약물들을 실패 상태로 표시
     if (overLimitMedicines.length > 0) {
         const overLimitNames = overLimitMedicines.map(m => `${m.pill_name}(${m.total}mL)`).join('\n• ');
-        const message = `다음 약물들이 설정된 최대량 ${maxSyrupAmount}mL를 초과하여 전송에서 제외됩니다:\n\n• ${overLimitNames}\n\n설정에서 시럽 최대량을 조정하거나 약물을 분할하여 전송하세요.`;
-        
-        showMessage('warning', message);
-        
         for (const medicine of overLimitMedicines) {
             logMessage(`${medicine.pill_name}은(는) 총량 ${medicine.total}mL가 설정된 최대량 ${maxSyrupAmount}mL를 초과하므로 전송에서 제외됩니다.`);
-            await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
+            // 팝업 대신 전송 상태에 표시
+            await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, '최대량 초과');
         }
     }
     
@@ -2686,6 +2848,17 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         const connectedDevice = Object.values(connectedDevices).find(device => 
             device.pill_code === medicine.pill_code && device.status === '연결됨'
         );
+        if (!connectedDevice) {
+            // 디버깅: 연결되지 않은 이유 확인
+            const deviceWithCode = Object.values(connectedDevices).find(device => 
+                device.pill_code === medicine.pill_code
+            );
+            if (deviceWithCode) {
+                logMessage(`약물 ${medicine.pill_name} (코드: ${medicine.pill_code}) - 기기 상태: ${deviceWithCode.status}`);
+            } else {
+                logMessage(`약물 ${medicine.pill_name} (코드: ${medicine.pill_code}) - connectedDevices에서 찾을 수 없음`);
+            }
+        }
         return connectedDevice !== undefined;
     });
     
@@ -2704,13 +2877,29 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     
     if (connectedMedicines.length === 0) {
         showMessage('warning', '전송할 수 있는 약물이 없습니다.');
+        // 자동조제 큐를 막지 않도록 플래그 및 상태를 복구 후 다음 처방전 처리
+        isDispensingInProgress = false;
+        dispensingDevices.clear();
+        cancelConnectionCheckDelay();
+        setNormalConnectionCheck();
+        if (isAuto) {
+            isAutoDispensingInProgress = false;
+            processNextInQueue();
+        }
         return;
     }
     
     logMessage(`병렬 전송 시작: ${connectedMedicines.length}개 약물`);
     
-    // 모든 약물을 병렬로 전송
-    const dispensingPromises = connectedMedicines.map(async (medicine) => {
+    // 과도한 동시 요청을 줄이기 위해 약물별로 소량의 지연을 둡니다.
+    const wait = (ms) => new Promise(res => setTimeout(res, ms));
+    const dispenseStaggerMs = 200; // 약물별 시작 간격 (ms)
+    
+    // 모든 약물을 병렬로 전송하되, 시작 시점을 약간씩 지연
+    const dispensingPromises = connectedMedicines.map(async (medicine, index) => {
+        if (index > 0) {
+            await wait(dispenseStaggerMs * index);
+        }
         const connectedDevice = Object.values(connectedDevices).find(device => 
             device.pill_code === medicine.pill_code && device.status === '연결됨'
         );
@@ -2731,11 +2920,31 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
                 total_volume: medicine.total
             };
             
-            const response = await makeStableRequest(`http://${connectedDevice.ip}/dispense`, data, {
-                timeout: COMMUNICATION_CONFIG.TIMEOUTS.DISPENSE
-            });
+            // 요청 재시도(404/Network Error/timeout 포함)
+            const maxAttempts = 5;
+            let lastError = null;
+            let response = null;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    response = await makeStableRequest(`http://${connectedDevice.ip}/dispense`, data, {
+                        timeout: COMMUNICATION_CONFIG.TIMEOUTS.DISPENSE
+                    });
+                    break; // 성공
+                } catch (err) {
+                    lastError = err;
+                    const isLast = attempt === maxAttempts;
+                    const status = err.response && err.response.status;
+                    const isRetryable = status === 404 || err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'EHOSTUNREACH' || err.code === 'ECONNRESET' || err.message.includes('Network Error');
+                    if (!isRetryable || isLast) {
+                        throw err;
+                    }
+                    logMessage(`${medicine.pill_name} 전송 재시도 (${attempt}/${maxAttempts - 1}) - 오류: ${err.message}`);
+                    const backoff = Math.min(500 * Math.pow(2, attempt - 1), 3000); // 최대 3초
+                    await wait(backoff);
+                }
+            }
             
-            if (response.status === 200) {
+            if (response && response.status === 200) {
                 logMessage(`${medicine.pill_name} 응답 데이터: ${JSON.stringify(response.data)}`);
                 
                 // 모든 200 응답(BUSY 포함)을 성공으로 처리
@@ -2753,14 +2962,23 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
                     return { success: true, medicine: medicine, device: connectedDevice, status: 'success' };
                 }
             } else {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                throw new Error(`HTTP ${response ? response.status : 'No Response'}`);
             }
         } catch (error) {
             logMessage(`${medicine.pill_name} 전송 실패: ${error.message}`);
             await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
             
-            // 연결 실패 시 기기 상태를 "연결 끊김"으로 변경
-            connectedDevice.status = '연결 끊김';
+            // 조제 실패 시에도 기기 상태를 "연결됨"으로 복구 (일시적 오류일 수 있으므로)
+            // connectedDevices에서 직접 업데이트하여 상태가 확실히 반영되도록 함
+            const deviceInConnectedDevices = Object.values(connectedDevices).find(d => 
+                d.ip === connectedDevice.ip && d.pill_code === connectedDevice.pill_code
+            );
+            if (deviceInConnectedDevices) {
+                deviceInConnectedDevices.status = '연결됨';
+                connectedDevice.status = '연결됨'; // 참조 객체도 업데이트
+            } else {
+                connectedDevice.status = '연결됨'; // connectedDevices에서 찾지 못한 경우에도 device 객체는 업데이트
+            }
             dispensingDevices.delete(connectedDevice.ip); // 조제 중인 기기 목록에서 제거
             updateConnectedTable();
             
@@ -2785,7 +3003,17 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
                 const { device, status } = result.value;
                 
                 // 조제 완료된 기기 상태를 "연결됨"으로 복구
-                device.status = '연결됨';
+                // connectedDevices에서 직접 업데이트하여 상태가 확실히 반영되도록 함
+                const deviceInConnectedDevices = Object.values(connectedDevices).find(d => 
+                    d.ip === device.ip && d.pill_code === device.pill_code
+                );
+                if (deviceInConnectedDevices) {
+                    deviceInConnectedDevices.status = '연결됨';
+                    device.status = '연결됨'; // 참조 객체도 업데이트
+                } else {
+                    // connectedDevices에서 찾지 못한 경우에도 device 객체는 업데이트
+                    device.status = '연결됨';
+                }
                 dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
                 updateConnectedTable();
                 
@@ -2794,6 +3022,12 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
                 const device = Object.values(connectedDevices).find(d => d.pill_code === medicine.pill_code);
                 if (device) {
                     dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
+                    // 실패한 경우에도 상태를 "연결됨"으로 복구 (다음 처방전 처리를 위해)
+                    // catch 블록에서 이미 복구했지만, 여기서도 확실히 복구
+                    if (device.status === '시럽 조제 중' || device.status === '연결 끊김') {
+                        device.status = '연결됨';
+                        updateConnectedTable();
+                    }
                 }
                 
                 // 실패한 약물 상태 업데이트
@@ -2809,6 +3043,9 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
             cancelConnectionCheckDelay(); // 지연 타이머 취소
             setNormalConnectionCheck(); // 일반 모드로 전환
             logMessage('모든 조제 완료 - 일반 연결 상태 확인 모드로 전환');
+            
+            // 대기열에서 다음 처방전 처리
+            processNextInQueue();
         }
         
         // 조제 완료 로그 출력
@@ -2821,6 +3058,9 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         // 오류 발생 시에도 조제 중인 기기들을 정리
         dispensingDevices.clear();
         isDispensingInProgress = false;
+        
+        // 오류 발생 시에도 대기열에서 다음 처방전 처리
+        processNextInQueue();
         cancelConnectionCheckDelay();
         setNormalConnectionCheck(); // 일반 모드로 복구
     }
@@ -2926,6 +3166,70 @@ async function attemptInitialConnection() {
     ).length;
     
     logMessage(`초기 연결 시도 완료: ${successfulConnections}/${devicesToConnect.length}개 성공`);
+}
+
+// 일괄 연결 (등록된 모든 기기 연결 시도)
+async function connectAllDevices() {
+    logMessage('일괄 연결 시작...');
+    
+    // 연결할 기기 목록 생성 (수동 해제된 기기도 포함)
+    const devicesToConnect = [];
+    for (const [savedMac, info] of Object.entries(savedConnections)) {
+        // 이미 연결된 기기는 제외
+        if (connectedDevices[savedMac]) {
+            logMessage(`이미 연결됨: ${info.nickname}`);
+            continue;
+        }
+        
+        devicesToConnect.push({ mac: savedMac, info: info });
+    }
+    
+    if (devicesToConnect.length === 0) {
+        showMessage('info', '연결할 기기가 없습니다.');
+        logMessage('일괄 연결: 연결할 기기가 없습니다.');
+        return;
+    }
+    
+    // 수동 해제 목록에서 제거 (사용자가 일괄연결을 누른 것은 다시 연결하고 싶다는 의미)
+    devicesToConnect.forEach(({ mac }) => {
+        if (manuallyDisconnectedDevices.has(mac)) {
+            manuallyDisconnectedDevices.delete(mac);
+            logMessage(`수동 해제 목록에서 제거: ${savedConnections[mac].nickname}`);
+        }
+    });
+    
+    // 수동 해제 목록 변경사항 저장
+    await saveConnections();
+    
+    // 모든 기기를 병렬로 연결 시도
+    const connectionPromises = devicesToConnect.map(async ({ mac, info }) => {
+        logMessage(`일괄 연결 시도: ${info.nickname} (${info.ip})`);
+        
+        try {
+            const success = await connectToDeviceByMac(mac, false);
+            if (success) {
+                logMessage(`일괄 연결 성공: ${info.nickname}`);
+            } else {
+                logMessage(`일괄 연결 실패: ${info.nickname}`);
+            }
+            return { mac, success };
+        } catch (error) {
+            logMessage(`일괄 연결 오류: ${info.nickname} - ${error.message}`);
+            return { mac, success: false };
+        }
+    });
+    
+    // 모든 연결 시도 완료 대기
+    const results = await Promise.allSettled(connectionPromises);
+    
+    // 결과 요약
+    const successfulConnections = results.filter(result => 
+        result.status === 'fulfilled' && result.value.success
+    ).length;
+    
+    const message = `일괄 연결 완료: ${successfulConnections}/${devicesToConnect.length}개 성공`;
+    logMessage(message);
+    showMessage('info', message);
 }
 
 // 주기적 작업 시작
@@ -3129,10 +3433,17 @@ async function checkConnectionStatus() {
                 if (currentStatus === "시럽 조제 중" || dispensingDevices.has(ip)) {
                     logMessage(`조제 중인 기기는 연결 상태 유지: ${ip} - 오류: ${error.message}`);
                 } else {
-                    // 조제 중이 아닌 경우에만 "일시적 응답 없음"으로 변경
-                    updateDeviceStatus(ip, '일시적 응답 없음');
-                    logMessage(`연결 상태 확인 오류: ${ip} - ${error.message}`);
-                    allConnected = false;
+                    // 404 오류는 기기 엔드포인트 문제일 수 있지만 실제 연결 상태와는 무관할 수 있음
+                    // 따라서 404 오류는 상태를 변경하지 않고 로그만 남김
+                    if (error.response && error.response.status === 404) {
+                        // 404 오류는 무시하고 상태 유지 (실제로는 연결되어 있을 수 있음)
+                        // 로그는 silent 모드에서만 출력하지 않음
+                    } else {
+                        // 404가 아닌 다른 오류는 "일시적 응답 없음"으로 변경
+                        updateDeviceStatus(ip, '일시적 응답 없음');
+                        logMessage(`연결 상태 확인 오류: ${ip} - ${error.message}`);
+                        allConnected = false;
+                    }
                 }
             }
         }
@@ -3217,8 +3528,15 @@ function startPrescriptionMonitor() {
                 if (!parsedFiles.has(filePath)) {
                     const receiptNumber = path.basename(filePath, fileExtension);
                     logMessage(`새 파일 감지: ${path.basename(filePath)}`);
-                    newFileParseCount++; // 새 파일 카운터 증가
-                    logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount}`);
+                    
+                    // 로그인 이후에만 파싱 카운터 증가
+                    if (isLoggedInSession) {
+                        newFileParseCount++; // 새 파일 카운터 증가 (로그인 이후에만)
+                        logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount} (로그인 이후)`);
+                    } else {
+                        logMessage(`ℹ️ 로그인 전 파일 파싱 - 카운트하지 않음: ${path.basename(filePath)}`);
+                    }
+                    
                     parsePrescriptionFile(filePath);
                     
                     // 파일명에서 날짜 추출
@@ -3267,33 +3585,46 @@ function startPrescriptionMonitor() {
                         const prescription = parsedPrescriptions[receiptNumber];
                         if (prescription && prescription.patient.receipt_date === selectedDate) {
                             const fileExt = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
-                            logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 자동으로 조제를 시작합니다.`);
                             
-                            // 환자 행이 생성된 후 자동 선택
-                            setTimeout(() => {
-                                const row = document.querySelector(`#patientTableBody tr[data-receipt-number="${receiptNumber}"]`);
-                                if (row) {
-                                    // 기존 선택 해제
-                                    document.querySelectorAll('#patientTableBody tr').forEach(r => r.classList.remove('table-primary'));
-                                    row.classList.add('table-primary');
-                                    
-                                    // 약물 정보 로드
-                                    loadPatientMedicines(receiptNumber);
-                                    logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
-                                    
-                                    // 약물 정보 로드 후 조제 시작
-                                    setTimeout(() => {
-                                        if (!isAutoDispensingInProgress) {
-                                            logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
-                                            startDispensing(true); // true: 자동조제 플래그
-                                        } else {
-                                            logMessage('자동조제가 이미 진행 중입니다. 새로운 처방전 처리를 건너뜁니다.');
-                                        }
-                                    }, 200);
-                                } else {
-                                    logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
-                                }
-                            }, 100); // 환자 행 생성 후 약간의 지연을 두고 실행
+                            // 저장된 시럽조제기에 매핑되는 약물이 하나라도 있는지 확인 (연결 상태와 무관)
+                            const hasRegisteredMedicine = prescription.medicines.some(med => {
+                                return Object.values(savedConnections).some(device => 
+                                    device.pill_code === med.pill_code
+                                );
+                            });
+                            
+                            if (!hasRegisteredMedicine) {
+                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 시럽조제기에 매핑되는 약물이 없어 자동조제 대기열에 추가하지 않습니다.`);
+                                return;
+                            }
+                            
+                            // 현재 연결되어 있지는 않더라도, 등록된 기기가 있으면 대기열에 추가하여 조제 종료 후 처리
+                            const hasConnectedOrBusyDevice = prescription.medicines.some(med => {
+                                return Object.values(connectedDevices).some(device => 
+                                    device.pill_code === med.pill_code && 
+                                    (device.status === '연결됨' || device.status === '시럽 조제 중')
+                                );
+                            });
+                            
+                            if (!hasConnectedOrBusyDevice) {
+                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기는 있으나 현재 연결 대기 상태입니다. 대기열에 추가하고 기기가 준비되면 전송합니다.`);
+                            }
+                            
+                            // 대기열에 이미 있는지 확인 (중복 방지)
+                            if (autoDispensingQueue.includes(receiptNumber)) {
+                                logMessage(`처방전 '${receiptNumber}${fileExt}'이(가) 이미 대기열에 있습니다.`);
+                                return;
+                            }
+                            
+                            // 대기열에 추가
+                            autoDispensingQueue.push(receiptNumber);
+                            logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 대기열에 추가되었습니다. (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
+                            
+                            // 대기열이 비어있었고 조제가 진행 중이 아니면 즉시 처리
+                            // 대기열에 이미 처방전이 있으면 순서대로 처리됨
+                            if (autoDispensingQueue.length === 1 && !isAutoDispensingInProgress) {
+                                processNextInQueue();
+                            }
                         }
                     });
                 }
@@ -3653,7 +3984,7 @@ async function retrySelectedMedicines(selectedMedicines) {
     
     // 조제 진행 중 플래그 설정 및 연결 상태 확인 지연 시작
     isDispensingInProgress = true;
-    startConnectionCheckDelay(60); // 60초 동안 연결 상태 확인 지연
+    startConnectionCheckDelay(5); // 5초 동안 연결 상태 확인 지연
     
     // 선택된 약물들을 병렬로 재전송
     const retryPromises = selectedMedicines.map(async (medicine) => {
@@ -3825,7 +4156,7 @@ async function retryFailedMedicines() {
     
     // 조제 진행 중 플래그 설정 및 연결 상태 확인 지연 시작
     isDispensingInProgress = true;
-    startConnectionCheckDelay(60); // 60초 동안 연결 상태 확인 지연
+    startConnectionCheckDelay(5); // 5초 동안 연결 상태 확인 지연
     
     // 연결된 실패한 약물들만 필터링
     const connectedFailedMedicines = failedMedicines.filter(medicine => {
@@ -4035,7 +4366,7 @@ function updateMedicineRowColors() {
 }
 
 // 연결 상태 확인 지연 시작
-function startConnectionCheckDelay(delaySeconds = 60) {
+function startConnectionCheckDelay(delaySeconds = 5) {
     logMessage(`조제 후 연결 상태 확인을 ${delaySeconds}초 동안 지연시킵니다.`);
     
     // 기존 지연 타이머가 있으면 취소
