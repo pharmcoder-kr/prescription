@@ -5,7 +5,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.10';
+const VERSION = '1.3.21';
 const TAG = `v${VERSION}`;
 
 async function createRelease() {
@@ -17,24 +17,12 @@ async function createRelease() {
 
   const releaseNotes = `## 주요 변경사항
 
-### 🐛 버그 수정
-- **로그인/회원가입 창 누락 문제 해결**: 빌드에 login.html과 register.html 파일이 포함되지 않던 문제 수정
-- **아이콘 표시 문제 해결**: 기본 Electron 아이콘 대신 지정한 아이콘이 표시되도록 수정
-- **업데이트 후 바탕화면 아이콘 사라짐 문제 해결**: 업데이트 후에도 바탕화면 바로가기 아이콘이 유지되도록 수정
-
-### 🔧 빌드 개선
-- package.json의 files 배열에 login.html과 register.html 추가
-- NSIS 설정에 shortcutIconPath 추가로 바로가기 아이콘 명시적 설정
-- differentialPackage를 false로 변경하여 업데이트 시 아이콘 유지
-
-### 🆕 새로운 기능 (이전 버전)
-- **월간 사용량 CSV 다운로드**: 관리자 대시보드에서 월간 사용량 데이터를 CSV 파일로 다운로드 가능
-- **월간 사용량 약국 수 표시**: 해당 월에 처방연동 기능을 사용한 약국 수를 실시간으로 표시
-- **동적 월 선택**: 현재 월부터 과거 12개월까지 자동으로 선택 가능
-
-### 🔧 개선사항 (이전 버전)
-- **파싱 이벤트 시간대 개선**: 파싱 이벤트가 한국 시간대(KST)로 저장되어 Supabase에서 정확한 시간 확인 가능
-- **월간 사용량 조회 개선**: 하드코딩된 월 선택을 동적 생성으로 변경하여 최신 월 자동 포함
+### ⚡ 성능 개선
+- **조제 완료 후 지연 시간 단축**: 조제 완료 후 연결 상태 확인 지연 시간을 60초에서 5초로 단축하여 다음 처방전 처리가 더 빠르게 시작됩니다.
+  - 일반 조제 시작 시 지연 시간: 60초 → 5초
+  - 재전송 시 지연 시간: 60초 → 5초
+  - 실패한 약물 재전송 시 지연 시간: 60초 → 5초
+  - 조제 완료 시 지연이 자동으로 취소되므로 실제로는 조제 완료까지의 시간만 영향을 받습니다.
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -57,7 +45,7 @@ async function createRelease() {
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
       {
         tag_name: TAG,
-        name: `v${VERSION} - 빌드 및 아이콘 문제 수정`,
+        name: `v${VERSION} - 조제 완료 후 지연 시간 단축`,
         body: releaseNotes,
         draft: true,
         prerelease: false
