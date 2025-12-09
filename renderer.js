@@ -3637,9 +3637,9 @@ function startPrescriptionMonitor() {
                             autoDispensingQueue.push(receiptNumber);
                             logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 대기열에 추가되었습니다. (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
                             
-                            // 대기열이 비어있었고 조제가 진행 중이 아니면 즉시 처리 (연결 상태와 무관)
-                            // 대기열에 이미 처방전이 있으면 순서대로 처리됨
-                            if (autoDispensingQueue.length === 1 && !isAutoDispensingInProgress) {
+                            // 조제가 진행 중이 아니면 즉시 처리 (연결 상태와 무관, 대기열 순서대로 처리)
+                            // 60초 주기 연결 상태 확인을 기다리지 않고 바로 처리하여 딜레이 제거
+                            if (!isAutoDispensingInProgress) {
                                 processNextInQueue();
                             }
                         }
