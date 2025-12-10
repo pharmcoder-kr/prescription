@@ -1981,10 +1981,6 @@ function parseAllPrescriptionFiles() {
             parsePrescriptionFile(filePath); // 파싱 수행
         });
         
-        logMessage(`처방전연동된 처방전 수: ${Object.keys(parsedPrescriptions).length}`);
-        Object.keys(parsedPrescriptions).forEach(key => {
-            logMessage(`처방전연동된 처방전: ${key} -> ${parsedPrescriptions[key].patient.receipt_time}`);
-        });
         
         filterPatientsByDate();
     } catch (error) {
@@ -2149,7 +2145,6 @@ function parsePrescriptionFile(filePath) {
                         bestContent = testContent;
                         bestEncoding = encoding;
                         decoded = true;
-                        logMessage(`인코딩 자동 감지: ${encoding} (환자명: ${firstLine})`);
                         break;
                     } else if (!decoded) {
                         // 한글이 없어도 깨지지 않았으면 후보로 저장
@@ -2165,10 +2160,8 @@ function parsePrescriptionFile(filePath) {
                 // 디코딩 실패 시 최선의 후보 사용 또는 utf8 기본값
                 if (bestContent) {
                     content = bestContent;
-                    logMessage(`인코딩 자동 감지: ${bestEncoding} (한글 미검출, 첫 줄 유효성 확인)`);
                 } else {
                     content = iconv.decode(buffer, 'utf8');
-                    logMessage('인코딩 자동 감지 실패: utf8 기본값 사용');
                 }
             }
 
@@ -2264,7 +2257,6 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
-            logMessage(`PM3000 처방전 파일 '${path.basename(filePath)}' 처방전연동 완료 (시간: ${receiptTime})`);
             
         } else {
             // 유팜 - XML 파일 파싱
@@ -2357,7 +2349,6 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
-            logMessage(`유팜 XML 파일 '${path.basename(filePath)}' 처방전연동 완료 (시간: ${receiptTime})`);
         }
         
         // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경
@@ -2675,11 +2666,14 @@ function processNextInQueue() {
         loadPatientMedicines(receiptNumber);
         logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
         
-        // 약물 정보 로드 후 조제 시작 (최소 지연으로 DOM 업데이트 대기)
-        setTimeout(() => {
-            logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
-            startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
-        }, 50); // 200ms → 50ms로 단축
+        // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
+        // requestAnimationFrame을 사용하여 DOM 업데이트 후 즉시 실행
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
+                startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
+            });
+        });
     } else {
         logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
         // 플래그 해제 후 다음 항목 처리
@@ -2711,10 +2705,12 @@ async function startDispensing(isAuto = false) {
                 // 자동조제 진행 중 플래그 설정
                 isAutoDispensingInProgress = true;
                 
-                // 약물 정보 로드 후 체크박스 생성까지 약간의 지연을 두고 조제 시작
-                setTimeout(() => {
-                    startDispensingInternal(receiptNumber, isAuto);
-                }, 200);
+                // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        startDispensingInternal(receiptNumber, isAuto);
+                    });
+                });
                 return; // 여기서 함수 종료하고 내부 함수에서 계속 처리
             }
         }
@@ -3498,158 +3494,207 @@ function updateDeviceStatus(ip, status) {
 }
 
 // 처방전 파일 모니터링
+let prescriptionWatcher = null;
+let prescriptionPollInterval = null;
+
+// 새 파일 처리 함수 (공통 로직)
+function processNewPrescriptionFile(filePath) {
+    try {
+        // 약국 등록 및 승인 상태 확인
+        if (pharmacyStatus === null || pharmacyStatus === 'pending' || pharmacyStatus === 'rejected') {
+            return;
+        }
+        
+        const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+        if (!filePath.endsWith(fileExtension)) {
+            return;
+        }
+        
+        if (parsedFiles.has(filePath)) {
+            return; // 이미 처리된 파일
+        }
+        
+        const receiptNumber = path.basename(filePath, fileExtension);
+        logMessage(`새 파일 감지: ${path.basename(filePath)}`);
+        
+        // 로그인 이후에만 파싱 카운터 증가
+        if (isLoggedInSession) {
+            newFileParseCount++; // 새 파일 카운터 증가 (로그인 이후에만)
+            logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount} (로그인 이후)`);
+        } else {
+            logMessage(`ℹ️ 로그인 전 파일 파싱 - 카운트하지 않음: ${path.basename(filePath)}`);
+        }
+        
+        parsePrescriptionFile(filePath);
+        
+        // 파일명에서 날짜 추출
+        let datePart = '';
+        if (prescriptionProgram === 'pm3000') {
+            // PM3000: 20250625xxxxxx.txt 형식
+            datePart = receiptNumber.substring(0, 8);
+        } else {
+            // 유팜: XML 파일에서 OrderDt 추출
+            try {
+                const content = fs.readFileSync(filePath, 'utf8');
+                const orderDtMatch = content.match(/<OrderDt>([^<]+)<\/OrderDt>/);
+                if (orderDtMatch) {
+                    datePart = orderDtMatch[1]; // YYYYMMDD 형식
+                    logMessage(`유팜 XML 파일에서 날짜 추출: ${datePart} (${path.basename(filePath)})`);
+                } else {
+                    logMessage(`유팜 XML 파일에서 OrderDt 태그를 찾을 수 없음: ${path.basename(filePath)}`);
+                }
+            } catch (error) {
+                logMessage(`유팜 XML 파일 날짜 추출 실패: ${path.basename(filePath)} - ${error.message}`);
+            }
+        }
+        
+        if (!/^20\d{6}$/.test(datePart)) {
+            return;
+        }
+        
+        const formatted = `${datePart.substring(0,4)}-${datePart.substring(4,6)}-${datePart.substring(6,8)}`;
+        elements.datePicker.value = formatted;
+        filterPatientsByDate();
+        
+        // 자동 조제가 활성화되어 있고, 새로 추가된 처방전이 현재 선택된 날짜와 일치하면 자동 조제 시작
+        if (autoDispensing) {
+            const prescription = parsedPrescriptions[receiptNumber];
+            if (prescription && prescription.patient.receipt_date === formatted) {
+                const fileExt = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+                
+                // 저장된 시럽조제기에 매핑되는 약물이 하나라도 있는지 확인 (연결 상태와 무관)
+                const hasRegisteredMedicine = prescription.medicines.some(med => {
+                    return Object.values(savedConnections).some(device => 
+                        device.pill_code === med.pill_code
+                    );
+                });
+                
+                if (!hasRegisteredMedicine) {
+                    logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 시럽조제기에 매핑되는 약물이 없어 자동조제 대기열에 추가하지 않습니다.`);
+                    return;
+                }
+                
+                // 등록된 기기가 있는지 확인 (연결 상태와 무관하게 즉시 처리 시도)
+                const hasRegisteredDevice = prescription.medicines.some(med => {
+                    return Object.values(connectedDevices).some(device => 
+                        device.pill_code === med.pill_code
+                    );
+                });
+                
+                if (!hasRegisteredDevice) {
+                    logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기가 없습니다.`);
+                    return;
+                }
+                
+                // 현재 연결 상태 확인 (정보 제공용)
+                const hasConnectedOrBusyDevice = prescription.medicines.some(med => {
+                    return Object.values(connectedDevices).some(device => 
+                        device.pill_code === med.pill_code && 
+                        (device.status === '연결됨' || device.status === '시럽 조제 중')
+                    );
+                });
+                
+                if (!hasConnectedOrBusyDevice) {
+                    logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기는 있으나 현재 연결 대기 상태입니다. 대기열에 추가하고 즉시 처리 시도합니다.`);
+                }
+                
+                // 대기열에 이미 있는지 확인 (중복 방지)
+                if (autoDispensingQueue.includes(receiptNumber)) {
+                    logMessage(`처방전 '${receiptNumber}${fileExt}'이(가) 이미 대기열에 있습니다.`);
+                    return;
+                }
+                
+                // 대기열에 추가
+                autoDispensingQueue.push(receiptNumber);
+                logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 대기열에 추가되었습니다. (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
+                
+                // 조제가 진행 중이 아니면 즉시 처리 (연결 상태와 무관, 대기열 순서대로 처리)
+                if (!isAutoDispensingInProgress) {
+                    processNextInQueue();
+                }
+            }
+        }
+    } catch (error) {
+        logMessage(`파일 처리 중 오류: ${error.message}`);
+    }
+}
+
 function startPrescriptionMonitor() {
     if (!prescriptionPath) return;
-
-    setInterval(() => {
-        try {
+    
+    // 기존 모니터링 중지
+    if (prescriptionWatcher) {
+        prescriptionWatcher.close();
+        prescriptionWatcher = null;
+    }
+    if (prescriptionPollInterval) {
+        clearInterval(prescriptionPollInterval);
+        prescriptionPollInterval = null;
+    }
+    
+    // fs.watch를 사용한 실시간 파일 감시
+    try {
+        prescriptionWatcher = fs.watch(prescriptionPath, { recursive: false }, (eventType, filename) => {
+            if (!filename) return;
+            
             // 약국 등록 및 승인 상태 확인
-            if (pharmacyStatus === null) {
-                // 미등록 상태에서는 파싱 안 함
+            if (pharmacyStatus === null || pharmacyStatus === 'pending' || pharmacyStatus === 'rejected') {
                 return;
             }
             
-            if (pharmacyStatus === 'pending') {
-                // pending 상태에서는 파싱 안 함
-                return;
-            }
-            
-            if (pharmacyStatus === 'rejected') {
-                // rejected 상태에서는 파싱 안 함
-                return;
-            }
-            
-            // 선택된 프로그램에 따라 파일 확장자 결정
             const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
-            const files = fs.readdirSync(prescriptionPath)
-                .filter(file => file.endsWith(fileExtension))
-                .map(file => path.join(prescriptionPath, file));
-
-            let newFileDetected = false;
-            let latestDate = null;
-            let newReceiptNumbers = [];
-
-            files.forEach(filePath => {
-                if (!parsedFiles.has(filePath)) {
-                    const receiptNumber = path.basename(filePath, fileExtension);
-                    logMessage(`새 파일 감지: ${path.basename(filePath)}`);
-                    
-                    // 로그인 이후에만 파싱 카운터 증가
-                    if (isLoggedInSession) {
-                        newFileParseCount++; // 새 파일 카운터 증가 (로그인 이후에만)
-                        logMessage(`📊 새 파일 파싱 카운트: ${newFileParseCount} (로그인 이후)`);
-                    } else {
-                        logMessage(`ℹ️ 로그인 전 파일 파싱 - 카운트하지 않음: ${path.basename(filePath)}`);
-                    }
-                    
-                    parsePrescriptionFile(filePath);
-                    
-                    // 파일명에서 날짜 추출
-                    let datePart = '';
-                    if (prescriptionProgram === 'pm3000') {
-                        // PM3000: 20250625xxxxxx.txt 형식
-                        datePart = receiptNumber.substring(0, 8);
-                    } else {
-                        // 유팜: XML 파일에서 OrderDt 추출
-                        try {
-                            const content = fs.readFileSync(filePath, 'utf8');
-                            const orderDtMatch = content.match(/<OrderDt>([^<]+)<\/OrderDt>/);
-                            if (orderDtMatch) {
-                                datePart = orderDtMatch[1]; // YYYYMMDD 형식
-                                logMessage(`유팜 XML 파일에서 날짜 추출: ${datePart} (${path.basename(filePath)})`);
-                            } else {
-                                logMessage(`유팜 XML 파일에서 OrderDt 태그를 찾을 수 없음: ${path.basename(filePath)}`);
-                            }
-                        } catch (error) {
-                            logMessage(`유팜 XML 파일 날짜 추출 실패: ${path.basename(filePath)} - ${error.message}`);
-                        }
-                    }
-                    
-                    if (/^20\d{6}$/.test(datePart)) {
-                        if (!latestDate || datePart > latestDate) {
-                            latestDate = datePart;
-                        }
-                        newReceiptNumbers.push(receiptNumber);
-                    }
-                    newFileDetected = true;
-                }
-            });
-
-            // 새 파일이 감지되면 datePicker를 최신 날짜로 맞추고 리스트 갱신
-            if (newFileDetected && latestDate) {
-                const formatted = `${latestDate.substring(0,4)}-${latestDate.substring(4,6)}-${latestDate.substring(6,8)}`;
-                elements.datePicker.value = formatted;
-                filterPatientsByDate();
-                
-                // 자동 조제가 활성화되어 있고, 새로 추가된 처방전이 현재 선택된 날짜와 일치하면 자동 조제 시작
-                if (autoDispensing && newReceiptNumbers.length > 0) {
-                    const selectedDate = elements.datePicker.value;
-                    const formattedDate = selectedDate.replace(/-/g, '');
-                    
-                    newReceiptNumbers.forEach(receiptNumber => {
-                        const prescription = parsedPrescriptions[receiptNumber];
-                        if (prescription && prescription.patient.receipt_date === selectedDate) {
-                            const fileExt = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
-                            
-                            // 저장된 시럽조제기에 매핑되는 약물이 하나라도 있는지 확인 (연결 상태와 무관)
-                            const hasRegisteredMedicine = prescription.medicines.some(med => {
-                                return Object.values(savedConnections).some(device => 
-                                    device.pill_code === med.pill_code
-                                );
-                            });
-                            
-                            if (!hasRegisteredMedicine) {
-                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 시럽조제기에 매핑되는 약물이 없어 자동조제 대기열에 추가하지 않습니다.`);
-                                return;
-                            }
-                            
-                            // 등록된 기기가 있는지 확인 (연결 상태와 무관하게 즉시 처리 시도)
-                            const hasRegisteredDevice = prescription.medicines.some(med => {
-                                return Object.values(connectedDevices).some(device => 
-                                    device.pill_code === med.pill_code
-                                );
-                            });
-                            
-                            if (!hasRegisteredDevice) {
-                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기가 없습니다.`);
-                                return;
-                            }
-                            
-                            // 현재 연결 상태 확인 (정보 제공용)
-                            const hasConnectedOrBusyDevice = prescription.medicines.some(med => {
-                                return Object.values(connectedDevices).some(device => 
-                                    device.pill_code === med.pill_code && 
-                                    (device.status === '연결됨' || device.status === '시럽 조제 중')
-                                );
-                            });
-                            
-                            if (!hasConnectedOrBusyDevice) {
-                                logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 기기는 있으나 현재 연결 대기 상태입니다. 대기열에 추가하고 즉시 처리 시도합니다.`);
-                            }
-                            
-                            // 대기열에 이미 있는지 확인 (중복 방지)
-                            if (autoDispensingQueue.includes(receiptNumber)) {
-                                logMessage(`처방전 '${receiptNumber}${fileExt}'이(가) 이미 대기열에 있습니다.`);
-                                return;
-                            }
-                            
-                            // 대기열에 추가
-                            autoDispensingQueue.push(receiptNumber);
-                            logMessage(`새로운 처방전 '${receiptNumber}${fileExt}'이(가) 감지되어 대기열에 추가되었습니다. (대기 중인 처방전: ${autoDispensingQueue.length}개)`);
-                            
-                            // 조제가 진행 중이 아니면 즉시 처리 (연결 상태와 무관, 대기열 순서대로 처리)
-                            // 60초 주기 연결 상태 확인을 기다리지 않고 바로 처리하여 딜레이 제거
-                            if (!isAutoDispensingInProgress) {
-                                processNextInQueue();
-                            }
-                        }
-                    });
-                }
+            if (!filename.endsWith(fileExtension)) {
+                return;
             }
-        } catch (error) {
-            logMessage(`파일 모니터링 중 오류: ${error.message}`);
-        }
-    }, 2000);
+            
+            // 파일이 생성되었을 때만 처리
+            if (eventType === 'rename' || eventType === 'change') {
+                const filePath = path.join(prescriptionPath, filename);
+                
+                // 파일이 실제로 존재하는지 확인 (파일 삭제 이벤트 방지)
+                setTimeout(() => {
+                    try {
+                        if (fs.existsSync(filePath)) {
+                            const stats = fs.statSync(filePath);
+                            // 파일이 완전히 쓰여졌는지 확인 (크기가 0이 아닌 경우)
+                            if (stats.size > 0) {
+                                processNewPrescriptionFile(filePath);
+                            }
+                        }
+                    } catch (error) {
+                        // 파일이 아직 생성 중이거나 삭제된 경우 무시
+                    }
+                }, 100); // 파일 쓰기 완료를 위한 짧은 지연
+            }
+        });
+        
+        logMessage('✅ 실시간 파일 감시 시작 (fs.watch)');
+    } catch (error) {
+        logMessage(`⚠️ fs.watch 실패, 폴링 모드로 전환: ${error.message}`);
+        
+        // fs.watch가 실패하면 폴링 방식으로 폴백
+        prescriptionPollInterval = setInterval(() => {
+            try {
+                // 약국 등록 및 승인 상태 확인
+                if (pharmacyStatus === null || pharmacyStatus === 'pending' || pharmacyStatus === 'rejected') {
+                    return;
+                }
+                
+                const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+                const files = fs.readdirSync(prescriptionPath)
+                    .filter(file => file.endsWith(fileExtension))
+                    .map(file => path.join(prescriptionPath, file));
+                
+                files.forEach(filePath => {
+                    if (!parsedFiles.has(filePath)) {
+                        processNewPrescriptionFile(filePath);
+                    }
+                });
+            } catch (error) {
+                logMessage(`파일 모니터링 중 오류: ${error.message}`);
+            }
+        }, 500); // 폴링 주기를 500ms로 단축
+    }
 }
 
 // 네트워크 스캔 모달 표시
