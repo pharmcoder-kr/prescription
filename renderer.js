@@ -2667,13 +2667,11 @@ function processNextInQueue() {
         logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
         
         // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
-        // requestAnimationFrame을 사용하여 DOM 업데이트 후 즉시 실행
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
-                startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
-            });
-        });
+        // 백그라운드에서도 작동하도록 setTimeout 사용 (requestAnimationFrame은 백그라운드에서 일시정지됨)
+        setTimeout(() => {
+            logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
+            startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
+        }, 0);
     } else {
         logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
         // 플래그 해제 후 다음 항목 처리
@@ -2706,11 +2704,10 @@ async function startDispensing(isAuto = false) {
                 isAutoDispensingInProgress = true;
                 
                 // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        startDispensingInternal(receiptNumber, isAuto);
-                    });
-                });
+                // 백그라운드에서도 작동하도록 setTimeout 사용 (requestAnimationFrame은 백그라운드에서 일시정지됨)
+                setTimeout(() => {
+                    startDispensingInternal(receiptNumber, isAuto);
+                }, 0);
                 return; // 여기서 함수 종료하고 내부 함수에서 계속 처리
             }
         }
@@ -2870,7 +2867,18 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     }
     
     if (connectedMedicines.length === 0) {
-        showMessage('warning', '전송할 수 있는 약물이 없습니다.');
+        // 등록되지 않은 약물이나 최대량 초과 약물만 있는 경우 팝업을 띄우지 않음
+        const hasOnlyUnregisteredOrOverLimit = selectedMedicines.length > 0 && 
+            unregisteredMedicines.length + overLimitMedicines.length === selectedMedicines.length;
+        
+        if (hasOnlyUnregisteredOrOverLimit) {
+            // 등록되지 않은 약물이나 최대량 초과 약물만 있는 경우 조용히 처리
+            logMessage('전송할 수 있는 약물이 없습니다. (등록되지 않은 약물 또는 최대량 초과 약물만 선택됨)');
+        } else {
+            // 다른 이유로 전송할 수 없는 경우에만 팝업 표시
+            showMessage('warning', '전송할 수 있는 약물이 없습니다.');
+        }
+        
         // 자동조제 큐를 막지 않도록 플래그 및 상태를 복구 후 다음 처방전 처리
         isDispensingInProgress = false;
         dispensingDevices.clear();

@@ -5,7 +5,7 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.22';
+const VERSION = '1.3.25';
 const TAG = `v${VERSION}`;
 
 async function createRelease() {
@@ -17,17 +17,18 @@ async function createRelease() {
 
   const releaseNotes = `## 주요 변경사항
 
-### ⚡ 자동조제 성능 개선
-- **자동조제 지연 문제 해결**: 자동조제 시 발생하던 지연 문제를 해결하여 수동조제와 동일한 속도로 전송됩니다.
-  - 기기 연결 대기 상태에서도 즉시 조제 시작 (기존: 연결 대기 시 지연)
-  - 연결 상태 확인 시 대기열 자동 처리 추가
-  - setTimeout 지연 시간 단축 (300ms → 50ms)
+### ⚡ 백그라운드 동작 지원 및 사용자 경험 개선
+- **백그라운드 조제 지원**: 창이 최소화되어도 조제 전송이 정상 작동
+- **불필요한 팝업 제거**: 등록되지 않은 약물 또는 최대량 초과 약물만 선택된 경우 팝업 표시 안 함
 
-### 🔧 개선 사항
-- **조제 완료 후 지연 시간 단축**: 조제 완료 후 연결 상태 확인 지연 시간을 60초에서 5초로 단축
-  - 일반 조제 시작 시 지연 시간: 60초 → 5초
-  - 재전송 시 지연 시간: 60초 → 5초
-  - 실패한 약물 재전송 시 지연 시간: 60초 → 5초
+### 🔧 수정 내용
+- \`requestAnimationFrame\` → \`setTimeout\` 변경으로 백그라운드에서도 조제 시작 가능
+- 등록되지 않은 약물 또는 최대량 초과 약물만 선택된 경우 팝업 대신 로그만 기록
+- 창이 최소화되어도 파일 감시 및 조제 전송 정상 작동
+
+### 🐛 해결된 문제
+- 창을 최소화하면 조제 전송이 멈추던 문제 해결
+- 등록되지 않은 약물/최대량 초과 약물만 선택 시 불필요한 팝업 표시 문제 해결
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -50,7 +51,7 @@ async function createRelease() {
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
       {
         tag_name: TAG,
-        name: `v${VERSION} - 자동조제 성능 개선`,
+        name: `v${VERSION} - 백그라운드 동작 지원 및 사용자 경험 개선`,
         body: releaseNotes,
         draft: true,
         prerelease: false
