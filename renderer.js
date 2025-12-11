@@ -465,6 +465,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const today = moment().format('YYYY-MM-DD');
         elements.datePicker.value = today;
     }
+    // 초기 로드 시 자동조제 화면의 연결된 기기 상태 업데이트
+    updateMainPageConnectedDevices();
 });
 
 // 로그를 파일로 저장하는 함수
@@ -815,6 +817,9 @@ function showMainPage() {
     // 수동조제 페이지도 반드시 숨김
     const manualPage = document.getElementById('manualPage');
     if (manualPage) manualPage.style.display = 'none';
+    
+    // 자동조제 화면으로 전환 시 연결된 기기 상태 업데이트
+    updateMainPageConnectedDevices();
 }
 
 function showNetworkPage() {
@@ -1156,16 +1161,11 @@ async function scanNetwork(silent = false) {
             // 기존 행의 IP 업데이트
             existingDevice.row.cells[0].textContent = ip;
             
-            // 상태는 현재 조제 중인 경우에만 보존하고, 그 외에는 새로운 상태로 업데이트
+            // 상태는 조제 중인 경우(dispensingDevices에 포함된 경우)에만 보존하고, 그 외에는 새로운 상태로 업데이트
             const currentStatus = existingDevice.row.cells[2].textContent;
-            if (currentStatus === "시럽 조제 중") {
-                // 조제 중인 상태 유지
-                // connectedDevices에서도 상태 보존
-                for (const [deviceMac, deviceInfo] of Object.entries(connectedDevices)) {
-                    if (normalizeMac(deviceMac) === normalizedMac && deviceInfo.status === "시럽 조제 중") {
-                        break;
-                    }
-                }
+            const isDispensing = dispensingDevices.has(existingDevice.deviceInfo.ip);
+            if (isDispensing) {
+                // 조제 중인 상태 유지 (ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지)
             } else {
                 // 조제 중이 아니면 새로운 상태로 업데이트
                 existingDevice.row.cells[2].textContent = data.status || 'ready';
@@ -1667,8 +1667,6 @@ function updateConnectedTable() {
         let statusClass = 'status-disconnected';
         if (device.status === '연결됨') {
             statusClass = 'status-connected';
-        } else if (device.status === '시럽 조제 중') {
-            statusClass = 'status-dispensing';
         }
 
         row.innerHTML = `
@@ -1679,6 +1677,48 @@ function updateConnectedTable() {
             <td>${moment().format('HH:mm:ss')}</td>
         `;
         elements.connectedTableBody.appendChild(row);
+    });
+    
+    // 자동조제 화면의 간소화된 상태도 업데이트
+    updateMainPageConnectedDevices();
+}
+
+// 자동조제 화면의 간소화된 연결 기기 상태 업데이트
+function updateMainPageConnectedDevices() {
+    const container = document.getElementById('mainPageConnectedDevices');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    const deviceCount = Object.keys(connectedDevices).length;
+    if (deviceCount === 0) {
+        container.innerHTML = '<div class="text-muted text-center py-2">연결된 기기가 없습니다.</div>';
+        return;
+    }
+    
+    // 간소화된 카드 형태로 표시
+    Object.entries(connectedDevices).forEach(([mac, device]) => {
+        let statusClass = 'status-disconnected';
+        let statusIcon = 'fa-times-circle';
+        if (device.status === '연결됨') {
+            statusClass = 'status-connected';
+            statusIcon = 'fa-check-circle';
+        }
+        
+        const deviceCard = document.createElement('div');
+        deviceCard.className = 'd-flex align-items-center justify-content-between p-2 mb-1 border rounded';
+        deviceCard.style.cssText = 'background-color: #f8f9fa;';
+        deviceCard.innerHTML = `
+            <div class="d-flex align-items-center flex-grow-1">
+                <i class="fas ${statusIcon} me-2 ${statusClass}" style="font-size: 0.9rem;"></i>
+                <div class="flex-grow-1">
+                    <div class="fw-bold" style="font-size: 0.85rem;">${device.nickname}</div>
+                    <div class="text-muted" style="font-size: 0.75rem;">${device.pill_code} | ${device.ip}</div>
+                </div>
+            </div>
+            <span class="${statusClass} ms-2" style="font-size: 0.8rem; white-space: nowrap;">${device.status}</span>
+        `;
+        container.appendChild(deviceCard);
     });
 }
 
@@ -2908,11 +2948,9 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         
         logMessage(`병렬 전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
         
-        // 조제 시작 전에 상태를 "시럽 조제 중"으로 변경
-        connectedDevice.status = '시럽 조제 중';
-        dispensingDevices.add(connectedDevice.ip); // 조제 중인 기기 목록에 추가
-        updateConnectedTable();
-        logMessage(`${medicine.pill_name} 조제 시작 - 기기 상태를 '시럽 조제 중'으로 변경`);
+        // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
+        dispensingDevices.add(connectedDevice.ip); // 조제 중인 기기 목록에 추가 (연결 상태 확인 시 참고용)
+        logMessage(`${medicine.pill_name} 조제 시작 - 기기 상태는 '연결됨' 유지`);
         
         // 약물 전송상태는 변경하지 않음 (전송 결과에 따라만 변경)
         
@@ -2970,19 +3008,8 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
             logMessage(`${medicine.pill_name} 전송 실패: ${error.message}`);
             await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
             
-            // 조제 실패 시에도 기기 상태를 "연결됨"으로 복구 (일시적 오류일 수 있으므로)
-            // connectedDevices에서 직접 업데이트하여 상태가 확실히 반영되도록 함
-            const deviceInConnectedDevices = Object.values(connectedDevices).find(d => 
-                d.ip === connectedDevice.ip && d.pill_code === connectedDevice.pill_code
-            );
-            if (deviceInConnectedDevices) {
-                deviceInConnectedDevices.status = '연결됨';
-                connectedDevice.status = '연결됨'; // 참조 객체도 업데이트
-            } else {
-                connectedDevice.status = '연결됨'; // connectedDevices에서 찾지 못한 경우에도 device 객체는 업데이트
-            }
+            // 조제 실패 시에도 기기 상태는 "연결됨" 유지 (ESP32는 듀얼코어로 통신 가능)
             dispensingDevices.delete(connectedDevice.ip); // 조제 중인 기기 목록에서 제거
-            updateConnectedTable();
             
             return { success: false, medicine: medicine, device: connectedDevice, error: error.message };
         }
@@ -3004,29 +3031,17 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
             if (result.status === 'fulfilled' && result.value && result.value.success) {
                 const { device, status } = result.value;
                 
-                // 조제 완료된 기기 상태를 "연결됨"으로 복구
-                // connectedDevices에서 직접 업데이트하여 상태가 확실히 반영되도록 함
-                const deviceInConnectedDevices = Object.values(connectedDevices).find(d => 
-                    d.ip === device.ip && d.pill_code === device.pill_code
-                );
-                if (deviceInConnectedDevices) {
-                    deviceInConnectedDevices.status = '연결됨';
-                    device.status = '연결됨'; // 참조 객체도 업데이트
-                } else {
-                    // connectedDevices에서 찾지 못한 경우에도 device 객체는 업데이트
-                    device.status = '연결됨';
-                }
+                // 조제 완료 - 기기 상태는 "연결됨" 유지 (변경 불필요)
                 dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
-                updateConnectedTable();
                 
-                logMessage(`${medicine.pill_name} 데이터 전송 완료 - 기기 상태를 '연결됨'으로 복구`);
+                logMessage(`${medicine.pill_name} 데이터 전송 완료`);
             } else {
                 const device = Object.values(connectedDevices).find(d => d.pill_code === medicine.pill_code);
                 if (device) {
                     dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
-                    // 실패한 경우에도 상태를 "연결됨"으로 복구 (다음 처방전 처리를 위해)
-                    // catch 블록에서 이미 복구했지만, 여기서도 확실히 복구
-                    if (device.status === '시럽 조제 중' || device.status === '연결 끊김') {
+                    // 실패한 경우에도 기기 상태는 "연결됨" 유지 (ESP32는 듀얼코어로 통신 가능)
+                    // 연결 끊김 상태인 경우에만 복구
+                    if (device.status === '연결 끊김') {
                         device.status = '연결됨';
                         updateConnectedTable();
                     }
@@ -3353,8 +3368,8 @@ async function checkConnectionStatus() {
             const ip = cells[2].textContent;
             const currentStatus = cells[3].textContent.trim(); // 현재 상태 가져오기
             
-            // 조제 중인 기기는 연결 상태 확인을 건너뛰기
-            if (currentStatus === "시럽 조제 중" || dispensingDevices.has(ip)) {
+            // 조제 중인 기기는 연결 상태 확인을 건너뛰기 (ESP32는 듀얼코어로 통신 가능하지만, 조제 중에는 상태 확인 불필요)
+            if (dispensingDevices.has(ip)) {
                 logMessage(`조제 중인 기기 연결 상태 확인 건너뜀: ${ip}`);
                 continue;
             }
@@ -3402,8 +3417,7 @@ async function checkConnectionStatus() {
                         
                         if (normalizedDeviceMac === normalizedSavedMac) {
                             // 조제 중이 아닌 경우에만 상태를 "연결됨"으로 변경
-                            const currentStatus = cells[3].textContent.trim();
-                            if (currentStatus !== "시럽 조제 중" && !dispensingDevices.has(ip)) {
+                            if (!dispensingDevices.has(ip)) {
                                 updateDeviceStatus(ip, '연결됨');
                             }
                         } else {
@@ -3414,25 +3428,22 @@ async function checkConnectionStatus() {
                             allConnected = false;
                         }
                     } else {
-                        // MAC 정보가 없으면 일시적 응답 없음으로 처리
-                        const currentStatus = cells[3].textContent.trim();
-                        if (currentStatus !== "시럽 조제 중" && !dispensingDevices.has(ip)) {
-                            updateDeviceStatus(ip, '일시적 응답 없음');
-                            allConnected = false;
+                        // MAC 정보가 없어도 200 응답이면 연결됨 상태로 복구
+                        // (ESP32가 MAC 정보를 반환하지 않는 경우가 있을 수 있음)
+                        if (!dispensingDevices.has(ip)) {
+                            updateDeviceStatus(ip, '연결됨');
                         }
                     }
                 } else {
                     // 비정상 응답 - 일시적 응답 없음으로 처리
-                    const currentStatus = cells[3].textContent.trim();
-                    if (currentStatus !== "시럽 조제 중" && !dispensingDevices.has(ip)) {
+                    if (!dispensingDevices.has(ip)) {
                         updateDeviceStatus(ip, '일시적 응답 없음');
                         allConnected = false;
                     }
                 }
             } catch (error) {
-                // 조제 중인 기기는 상태를 보존
-                const currentStatus = cells[3].textContent.trim();
-                if (currentStatus === "시럽 조제 중" || dispensingDevices.has(ip)) {
+                // 조제 중인 기기는 상태를 보존 (ESP32는 듀얼코어로 통신 가능)
+                if (dispensingDevices.has(ip)) {
                     logMessage(`조제 중인 기기는 연결 상태 유지: ${ip} - 오류: ${error.message}`);
                 } else {
                     // 404 오류는 기기 엔드포인트 문제일 수 있지만 실제 연결 상태와는 무관할 수 있음
@@ -3598,7 +3609,7 @@ function processNewPrescriptionFile(filePath) {
                 const hasConnectedOrBusyDevice = prescription.medicines.some(med => {
                     return Object.values(connectedDevices).some(device => 
                         device.pill_code === med.pill_code && 
-                        (device.status === '연결됨' || device.status === '시럽 조제 중')
+                        device.status === '연결됨'
                     );
                 });
                 
@@ -4073,10 +4084,7 @@ async function retrySelectedMedicines(selectedMedicines) {
         
         logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
         
-        // 조제 시작 전에 상태를 "시럽 조제 중"으로 변경
-        connectedDevice.status = '시럽 조제 중';
-        updateConnectedTable();
-        logMessage(`${medicine.pill_name} 재전송 시작 - 기기 상태를 '시럽 조제 중'으로 변경`);
+        // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
         
         try {
             const data = `TV${medicine.total} FF FF FF`;
@@ -4095,13 +4103,6 @@ async function retrySelectedMedicines(selectedMedicines) {
                 const newStatus = incrementTransmissionCount(currentStatus);
                 await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, newStatus, true);
                 
-                // 성공 시 30초 후에 상태를 "연결됨"으로 복원 (조제 시간 고려)
-                setTimeout(() => {
-                    connectedDevice.status = '연결됨';
-                    updateConnectedTable();
-                    logMessage(`${medicine.pill_name} 재전송 완료 - 기기 상태를 '연결됨'으로 복원`);
-                }, 30000);
-                
                 return {
                     success: true,
                     medicine: medicine,
@@ -4109,9 +4110,6 @@ async function retrySelectedMedicines(selectedMedicines) {
                 };
             } else {
                 logMessage(`${medicine.pill_name} 재전송 실패: ${response.status}`);
-                connectedDevice.status = '연결됨';
-                updateConnectedTable();
-                logMessage(`${medicine.pill_name} 재전송 실패 - 기기 상태를 '연결됨'으로 복원`);
                 
                 await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
                 
@@ -4124,9 +4122,6 @@ async function retrySelectedMedicines(selectedMedicines) {
             }
         } catch (error) {
             logMessage(`${medicine.pill_name} 재전송 중 오류: ${error.message}`);
-            connectedDevice.status = '연결됨';
-            updateConnectedTable();
-            logMessage(`${medicine.pill_name} 재전송 오류 - 기기 상태를 '연결됨'으로 복원`);
             
             await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
             
@@ -4261,12 +4256,7 @@ async function retryFailedMedicines() {
         
         logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
         
-        // 조제 시작 전에 상태를 "시럽 조제 중"으로 변경
-        connectedDevice.status = '시럽 조제 중';
-        updateConnectedTable();
-        logMessage(`${medicine.pill_name} 재전송 시작 - 기기 상태를 '시럽 조제 중'으로 변경`);
-        
-        // 약물 전송상태는 변경하지 않음 (전송 결과에 따라만 변경)
+        // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
         
         try {
             const data = `TV${medicine.total} FF FF FF`;
@@ -4285,13 +4275,6 @@ async function retryFailedMedicines() {
                 const newStatus = incrementTransmissionCount(currentStatus);
                 await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, newStatus, true);
                 
-                // 성공 시 30초 후에 상태를 "연결됨"으로 복원 (조제 시간 고려)
-                setTimeout(() => {
-                    connectedDevice.status = '연결됨';
-                    updateConnectedTable();
-                    logMessage(`${medicine.pill_name} 재전송 완료 - 기기 상태를 '연결됨'으로 복원`);
-                }, 30000);
-                
                 return {
                     success: true,
                     medicine: medicine,
@@ -4299,9 +4282,6 @@ async function retryFailedMedicines() {
                 };
             } else {
                 logMessage(`${medicine.pill_name} 재전송 실패: ${response.status}`);
-                connectedDevice.status = '연결됨';
-                updateConnectedTable();
-                logMessage(`${medicine.pill_name} 재전송 실패 - 기기 상태를 '연결됨'으로 복원`);
                 
                 await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
                 
@@ -4314,9 +4294,6 @@ async function retryFailedMedicines() {
             }
         } catch (error) {
             logMessage(`${medicine.pill_name} 재전송 중 오류: ${error.message}`);
-            connectedDevice.status = '연결됨';
-            updateConnectedTable();
-            logMessage(`${medicine.pill_name} 재전송 오류 - 기기 상태를 '연결됨'으로 복원`);
             
             await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, 0); // 실패는 0으로 표시
             
@@ -4649,11 +4626,8 @@ function createManualRow(initMac = null, initTotal = '') {
         });
         
         try {
-            // 조제 시작 - 기기 상태를 "시럽 조제 중"으로 변경
-            device.status = '시럽 조제 중';
-            dispensingDevices.add(device.ip); // 조제 중인 기기 목록에 추가
-            updateConnectedTable();
-            updateStatus();
+            // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
+            dispensingDevices.add(device.ip); // 조제 중인 기기 목록에 추가 (연결 상태 확인 시 참고용)
             
             const data = {
                 patient_name: isUrgent ? '긴급조제' : '수동조제',
@@ -4717,10 +4691,8 @@ function createManualRow(initMac = null, initTotal = '') {
             totalInput.value = '';
             totalInput.placeholder = '총량';
             
-            // 조제 완료 - 기기 상태를 "연결됨"으로 복구
-            device.status = '연결됨';
+            // 조제 완료 - 기기 상태는 "연결됨" 유지 (변경 불필요)
             dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
-            updateConnectedTable();
             updateStatus();
             saveManualRowsState();
             
@@ -4738,11 +4710,9 @@ function createManualRow(initMac = null, initTotal = '') {
                 logMessage(`수동조제 최종 실패: ${error.message}`);
             }
             
-            // 실패 시에도 기기 상태를 "연결됨"으로 복구
+            // 실패 시에도 기기 상태는 "연결됨" 유지 (ESP32는 듀얼코어로 통신 가능)
             if (connectedDevices[selectedMac]) {
-                device.status = '연결됨';
                 dispensingDevices.delete(device.ip); // 조제 중인 기기 목록에서 제거
-                updateConnectedTable();
                 updateStatus();
             }
         }
