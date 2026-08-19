@@ -1332,7 +1332,7 @@ app.post('/v1/device-logs', async (req, res) => {
       const { data: pharmacy } = await supabase
         .from('pharmacies')
         .select('name, ykiin')
-        .eq('contact_email', username)
+        .eq('username', username)
         .single();
       if (pharmacy) {
         pharmacy_name = pharmacy.name;
