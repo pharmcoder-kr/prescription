@@ -1049,4 +1049,126 @@ body {
     border-radius: 50%;
     border: 2px solid white;
     animation: pulse 2s infinite;
-} 
+}
+
+/* ESP32 펌웨어 업데이트 모달 (기본 PC연동) */
+.firmware-update-modal-shell {
+    border: none;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.firmware-update-modal-header {
+    background: linear-gradient(135deg, #6f42c1 0%, #5a32a3 50%, #4c2d91 100%);
+    padding: 1rem 1.25rem;
+}
+
+.firmware-latest-version-input {
+    max-width: 140px;
+    font-weight: 600;
+}
+
+.firmware-device-list-container {
+    max-height: 360px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.firmware-device-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid #e8e4f0;
+    border-radius: 12px;
+    box-shadow: 0 1px 4px rgba(111, 66, 193, 0.06);
+}
+
+.firmware-device-meta {
+    min-width: 140px;
+}
+
+.firmware-badge-latest {
+    background: #28a745 !important;
+    color: #fff !important;
+    font-weight: 500;
+    padding: 0.35em 0.75em;
+}
+
+.firmware-update-proceed-btn {
+    background: linear-gradient(135deg, #6f42c1 0%, #5a32a3 100%);
+    border: none;
+    color: #fff !important;
+    font-weight: 600;
+}
+
+.firmware-update-proceed-btn:hover {
+    background: linear-gradient(135deg, #5a32a3 0%, #4c2d91 100%);
+    color: #fff !important;
+}
+
+.firmware-update-proceed-btn:disabled {
+    opacity: 0.65;
+}
+
+.esp-ota-progress-panel {
+    padding: 14px 16px;
+    background: linear-gradient(180deg, #f8f6fc 0%, #f3f0fa 100%);
+    border: 1px solid #e8e4f0;
+    border-radius: 12px;
+}
+
+.esp-ota-progress-track {
+    background-color: #e2dcf0;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.esp-ota-progress-panel .progress-bar {
+    background: linear-gradient(90deg, #6f42c1 0%, #5a32a3 100%);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.esp-ota-parallel-row .esp-ota-row-bar.bg-success,
+.esp-ota-parallel-row .esp-ota-row-bar.bg-danger {
+    background-image: none;
+}
+
+.esp-ota-parallel-row .esp-ota-row-detail {
+    min-height: 1.25rem;
+    word-break: break-word;
+}
+
+/* 달력: 처방데이터 있는 날짜 표시 */
+.flatpickr-day.has-prescription {
+    font-weight: 700;
+    color: #5a32a3;
+    position: relative;
+}
+
+.flatpickr-day.has-prescription::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: 3px;
+    transform: translateX(-50%);
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #6f42c1;
+}
+
+.flatpickr-day.has-prescription.selected,
+.flatpickr-day.has-prescription.selected:hover {
+    color: #fff;
+}
+
+.flatpickr-day.has-prescription.selected::after {
+    background: #fff;
+}

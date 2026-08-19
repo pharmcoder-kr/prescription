@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>종료 중...</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            max-width: 400px;
+            width: 90%;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .status-text {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 30px;
+            min-height: 24px;
+        }
+        
+        .spinner-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 30px 0;
+        }
+        
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .progress-steps {
+            margin-top: 20px;
+            text-align: left;
+        }
+        
+        .step {
+            padding: 8px 0;
+            font-size: 14px;
+            color: #999;
+            display: flex;
+            align-items: center;
+        }
+        
+        .step.active {
+            color: #667eea;
+            font-weight: 500;
+        }
+        
+        .step.completed {
+            color: #4caf50;
+        }
+        
+        .step-icon {
+            margin-right: 10px;
+            width: 16px;
+            text-align: center;
+        }
+        
+        .step-icon.spinner-icon {
+            animation: spin 1s linear infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>앱을 종료하는 중...</h1>
+        <div class="status-text" id="statusText">데이터를 저장하고 있습니다...</div>
+        <div class="spinner-container">
+            <div class="spinner"></div>
+        </div>
+        <div class="progress-steps">
+            <div class="step" id="step1">
+                <span class="step-icon">○</span>
+                <span>로그 파일 저장 중</span>
+            </div>
+            <div class="step" id="step2">
+                <span class="step-icon">○</span>
+                <span>데이터 전송 중</span>
+            </div>
+            <div class="step" id="step3">
+                <span class="step-icon">○</span>
+                <span>종료 중</span>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // IPC 통신을 통해 메인 프로세스로부터 상태 업데이트 수신
+        const { ipcRenderer } = require('electron');
+        
+        // 단계 업데이트 함수
+        function updateStep(stepNum, status) {
+            const step = document.getElementById(`step${stepNum}`);
+            const icon = step.querySelector('.step-icon');
+            
+            // 기존 클래스 제거
+            step.classList.remove('active', 'completed');
+            icon.textContent = '○';
+            icon.classList.remove('spinner-icon');
+            
+            if (status === 'active') {
+                step.classList.add('active');
+                icon.textContent = '⟳';
+                icon.classList.add('spinner-icon');
+            } else if (status === 'completed') {
+                step.classList.add('completed');
+                icon.textContent = '✓';
+            }
+        }
+        
+        function updateStatus(text) {
+            document.getElementById('statusText').textContent = text;
+        }
+        
+        // 메인 프로세스로부터 상태 업데이트 수신
+        ipcRenderer.on('shutdown:update-status', (event, data) => {
+            if (data.step) {
+                updateStep(data.step, data.status);
+            }
+            if (data.text) {
+                updateStatus(data.text);
+            }
+        });
+        
+        // 초기 상태 설정
+        updateStep(1, 'active');
+        updateStatus('로그 파일을 저장하고 있습니다...');
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

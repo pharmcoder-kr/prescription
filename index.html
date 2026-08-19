@@ -22,7 +22,7 @@
                 <div class="navbar-nav ms-auto d-flex align-items-center">
                     <span class="text-light me-3 small" id="appVersion">v1.0.0</span>
                     <button class="btn btn-outline-light me-2" onclick="showMainPage()">
-                        <i class="fas fa-home me-1"></i>자동조제
+                        <i class="fas fa-home me-1"></i>처방연동조제
                     </button>
                     <button class="btn btn-outline-light me-2" onclick="showManualPage()">
                         <i class="fas fa-edit me-1"></i>수동조제
@@ -177,8 +177,8 @@
                 </div>
             </div>
 
-            <!-- 로그 영역 -->
-            <div class="row">
+            <!-- 로그 영역 (기본 숨김, Ctrl+Shift+L로 표시/숨김) -->
+            <div class="row d-none" id="logPanelRow">
                 <div class="col-12">
                     <div class="card">
                         <div class="card-header">
@@ -222,16 +222,14 @@
                                 <table class="table table-sm table-bordered mb-0" id="manualStatusListTable" style="table-layout: fixed; width: 100%;">
                                     <colgroup>
                                         <col style="width: 80px;">
-                                        <col style="width: 120px;">
-                                        <col style="width: 110px;">
-                                        <col style="width: 70px;">
-                                        <col style="width: 70px;">
+                                        <col style="width: 150px;">
+                                        <col style="width: 80px;">
+                                        <col style="width: 90px;">
                                     </colgroup>
                                     <thead class="table-light sticky-top">
                                         <tr>
                                             <th>시간</th>
                                             <th>시럽명</th>
-                                            <th>MAC</th>
                                             <th>총량</th>
                                             <th>상태</th>
                                         </tr>
@@ -286,33 +284,33 @@
                                 </label>
                                 <select class="form-select" id="prescriptionProgram" onchange="onPrescriptionProgramChanged()">
                                     <option value="pm3000">PM3000, 팜플러스20</option>
-                                    <!-- 유팜 옵션: 계약 완료 후 활성화 예정 -->
-                                    <!-- <option value="upam">유팜</option> -->
+                                    <option value="upam">유팜</option>
                                 </select>
                                 <small class="text-muted">사용 중인 처방조제프로그램을 선택하세요. 선택한 프로그램에 따라 데이터 처방전연동 방식이 변경됩니다.</small>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 자동 조제 설정 -->
+                    <!-- 처방연동조제 설정 -->
                     <div class="card mb-4">
                         <div class="card-header">
                             <h5 class="card-title mb-0">
-                                <i class="fas fa-cog me-2"></i>자동 조제 설정
+                                <i class="fas fa-cog me-2"></i>처방연동조제 설정
                             </h5>
                         </div>
                         <div class="card-body">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="autoDispensing">
                                 <label class="form-check-label" for="autoDispensing">
-                                    자동 조제 활성화
+                                    처방연동조제 활성화
+                                    <span class="text-warning ms-1 align-middle" role="img" tabindex="0"
+                                          title="주의: 처방연동조제 시 시럽 최대량 설정이 적용됩니다. 초과하는 약물은 자동으로 실패 처리됩니다."
+                                          style="cursor: help; font-size: 0.95rem;">
+                                        <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                    </span>
                                 </label>
                             </div>
                             <small class="text-muted">새로운 처방전이 감지되면 자동으로 조제를 시작합니다.</small>
-                            <div class="alert alert-warning mt-3">
-                                <i class="fas fa-exclamation-triangle me-2"></i>
-                                <strong>주의:</strong> 자동 조제 시 시럽 최대량 설정이 적용됩니다. 초과하는 약물은 자동으로 실패 처리됩니다.
-                            </div>
                         </div>
                     </div>
 
@@ -327,19 +325,15 @@
                             <div class="mb-3">
                                 <label for="maxSyrupAmount" class="form-label">
                                     <i class="fas fa-flask me-1"></i>시럽 최대량 (mL)
+                                    <span class="text-info ms-1 align-middle" role="img" tabindex="0"
+                                          title="설정 가이드 · 기본값: 100mL (시럽조제기 표준 용량) · ex) 100mL 시럽병에 150mL 분주 시 넘칠 수 있음 · 초과 시: 처방연동조제에서는 실패 처리, 수동 조제에서는 경고 메시지"
+                                          style="cursor: help; font-size: 0.95rem;">
+                                        <i class="fas fa-info-circle" aria-hidden="true"></i>
+                                    </span>
                                 </label>
                                 <input type="number" class="form-control" id="maxSyrupAmount" 
                                        placeholder="100" min="1" max="1000" value="100">
-                                <small class="text-muted">시럽조제기의 최대 용량을 설정하세요. 설정된 최대량을 초과하는 약물은 전송되지 않으며, 자동 조제와 수동 조제 모두에 적용됩니다.</small>
-                            </div>
-                            <div class="alert alert-info">
-                                <i class="fas fa-info-circle me-2"></i>
-                                <strong>설정 가이드:</strong>
-                                <ul class="mb-0 mt-2">
-                                    <li>기본값: 100mL (시럽조제기 표준 용량)</li>
-                                    <li>ex) 100mL 시럽병에 150mL 분주시 넘칠 수 있음</li>
-                                    <li>초과 시: 자동 조제에서는 실패 처리, 수동 조제에서는 경고 메시지</li>
-                                </ul>
+                                <small class="text-muted">시럽조제기의 최대 용량을 설정하세요. 설정된 최대량을 초과하는 약물은 전송되지 않으며, 처방연동조제와 수동 조제 모두에 적용됩니다.</small>
                             </div>
                         </div>
                     </div>
@@ -361,6 +355,35 @@
                         </div>
                     </div>
 
+                    <!-- ESP32 펌웨어 (기본: ESP32-CODE/OTA, 로드셀: ESP32-CODE-LOADCELL/OTA) -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-microchip me-2"></i>ESP32 펌웨어
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <button type="button" class="btn btn-primary" onclick="openFirmwareUpdateModal()">
+                                <i class="fas fa-microchip me-1"></i>펌웨어 업데이트
+                            </button>
+                            <small class="text-muted d-block mt-2">기기 <code>/version</code>의 <code>model</code>로 기본·로드셀을 구분해 GitHub OTA와 비교합니다.</small>
+                        </div>
+                    </div>
+
+                    <!-- HMI LCD (HMI-DESIGN/OTA) -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-tv me-2"></i>HMI LCD
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <button type="button" class="btn btn-primary" onclick="openHmiLcdUpdateModal()">
+                                <i class="fas fa-tv me-1"></i>LCD 업데이트
+                            </button>
+                            <small class="text-muted d-block mt-2">기기 HMI 버전과 GitHub HMI-DESIGN/OTA를 비교해 LCD(.tft)를 업데이트합니다.</small>
+                        </div>
+                    </div>
 
                 </div>
 
@@ -391,7 +414,7 @@
                     </div>
 
                     <!-- 연결된 기기 목록 -->
-                    <div class="card">
+                    <div class="card mb-4">
                         <div class="card-header">
                             <div class="d-flex justify-content-between align-items-center">
                                 <h5 class="card-title mb-0">
@@ -417,6 +440,7 @@
                                             <th>IP 주소</th>
                                             <th>상태</th>
                                             <th>연결시간</th>
+                                            <th>지원</th>
                                         </tr>
                                     </thead>
                                     <tbody id="connectedTableBody">
@@ -425,6 +449,135 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- 로그인 / 자동 로그인 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-user-lock me-2"></i>로그인
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="mb-2 small text-muted" id="autoLoginStatusText">자동 로그인 상태를 확인하는 중...</p>
+                            <button type="button" class="btn btn-outline-danger" id="disableAutoLoginBtn" onclick="disableAutoLogin()">
+                                <i class="fas fa-sign-out-alt me-1"></i>자동로그인 해제
+                            </button>
+                            <small class="text-muted d-block mt-2">해제 후 다음 실행부터는 로그인 창에서 ID/비밀번호를 직접 입력해야 합니다.</small>
+                        </div>
+                    </div>
+
+                    <!-- 처방데이터 삭제 -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="fas fa-trash-alt me-2"></i>처방데이터 관리
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <button type="button" class="btn btn-danger mb-3" onclick="deleteAllPrescriptionData()">
+                                <i class="fas fa-trash me-1"></i>처방데이터 삭제
+                            </button>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="autoDeleteTodayOnExit">
+                                <label class="form-check-label" for="autoDeleteTodayOnExit">
+                                    종료시 처방데이터 자동삭제
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-2">처방전 파일 경로에 쌓인 처방 파일(.txt/.xml)을 삭제합니다. 자동삭제를 켜면 프로그램 종료 시 해당 폴더의 처방 파일을 모두 삭제합니다.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ESP32 펌웨어 업데이트 모달 -->
+    <div class="modal fade" id="firmwareUpdateModal" tabindex="-1" aria-labelledby="firmwareUpdateModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content firmware-update-modal-shell">
+                <div class="modal-header firmware-update-modal-header border-0">
+                    <h5 class="modal-title text-white mb-0" id="firmwareUpdateModalLabel">
+                        <i class="fas fa-microchip me-2"></i>펌웨어 업데이트
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" id="espFirmwareModalHeaderClose" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body pt-3 pb-2">
+                    <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mb-2">
+                        <span class="form-label mb-0 fw-semibold">최신 펌웨어 버전 (GitHub)</span>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="espFirmwareModalRefreshBtn" onclick="refreshEspFirmwareModalData()">
+                            <i class="fas fa-sync-alt me-1"></i>새로고침
+                        </button>
+                    </div>
+                    <div class="row g-2 firmware-latest-dual mb-3">
+                        <div class="col-sm-6">
+                            <label class="form-label small text-muted mb-0" for="espLatestBasicDisplay">기본 모델 (ESP32-CODE/OTA)</label>
+                            <input type="text" class="form-control form-control-sm" id="espLatestBasicDisplay" value="—" readonly>
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small text-muted mb-0" for="espLatestLoadcellDisplay">로드셀 (model=loadcell)</label>
+                            <input type="text" class="form-control form-control-sm" id="espLatestLoadcellDisplay" value="—" readonly>
+                        </div>
+                    </div>
+                    <h6 class="fw-semibold mb-2">연결된 시럽조제기 목록</h6>
+                    <div id="espOtaProgressPanel" class="esp-ota-progress-panel d-none mb-3" role="status" aria-live="polite">
+                        <div class="fw-semibold mb-2 small text-secondary">OTA 업데이트 진행 (동시)</div>
+                        <div id="espOtaParallelSummary" class="small text-muted mb-2">—</div>
+                        <div id="espOtaParallelRows"></div>
+                        <button type="button" class="btn btn-primary d-none mt-2" id="espOtaProgressAckBtn" disabled>
+                            <i class="fas fa-check me-2"></i>확인
+                        </button>
+                    </div>
+                    <div id="firmwareDeviceListContainer" class="firmware-device-list-container"></div>
+                </div>
+                <div class="modal-footer border-0 pt-0 justify-content-end">
+                    <button type="button" class="btn btn-secondary" id="espFirmwareModalFooterClose" data-bs-dismiss="modal">닫기</button>
+                    <button type="button" class="btn btn-lg rounded-pill px-4 firmware-update-proceed-btn" id="espFirmwareProceedBtn" onclick="proceedEspFirmwareBatchUpdate()">
+                        <i class="fas fa-download me-2"></i>업데이트 진행
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HMI LCD 업데이트 모달 -->
+    <div class="modal fade" id="hmiLcdUpdateModal" tabindex="-1" aria-labelledby="hmiLcdUpdateModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content firmware-update-modal-shell">
+                <div class="modal-header firmware-update-modal-header border-0">
+                    <h5 class="modal-title text-white mb-0" id="hmiLcdUpdateModalLabel">
+                        <i class="fas fa-tv me-2"></i>HMI LCD 업데이트
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" id="hmiLcdModalHeaderClose" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body pt-3 pb-2">
+                    <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mb-2">
+                        <span class="form-label mb-0 fw-semibold">최신 HMI 버전 (GitHub HMI-DESIGN/OTA)</span>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="hmiLcdModalRefreshBtn" onclick="refreshHmiLcdModalData()">
+                            <i class="fas fa-sync-alt me-1"></i>새로고침
+                        </button>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" class="form-control form-control-sm" id="hmiLatestDisplay" value="—" readonly>
+                    </div>
+                    <p class="small text-muted mb-3">
+                        LCD에 <strong>System Data ERROR</strong>가 보이면 OTA 전에 SD카드로 <code>display.tft</code>를 먼저 복구하세요.
+                    </p>
+                    <h6 class="fw-semibold mb-2">연결된 시럽조제기 목록</h6>
+                    <div id="hmiOtaProgressPanel" class="esp-ota-progress-panel d-none mb-3" role="status" aria-live="polite">
+                        <div class="fw-semibold mb-2 small text-secondary">LCD OTA 진행</div>
+                        <div id="hmiOtaParallelSummary" class="small text-muted mb-2">—</div>
+                        <div id="hmiOtaParallelRows"></div>
+                        <button type="button" class="btn btn-primary d-none mt-2" id="hmiOtaProgressAckBtn" disabled>
+                            <i class="fas fa-check me-2"></i>확인
+                        </button>
+                    </div>
+                    <div id="hmiDeviceListContainer" class="firmware-device-list-container"></div>
+                </div>
+                <div class="modal-footer border-0 pt-0 justify-content-end">
+                    <button type="button" class="btn btn-secondary" id="hmiLcdModalFooterClose" data-bs-dismiss="modal">닫기</button>
+                    <button type="button" class="btn btn-lg rounded-pill px-4 firmware-update-proceed-btn" id="hmiLcdProceedBtn" onclick="proceedHmiLcdBatchUpdate()">
+                        <i class="fas fa-download me-2"></i>업데이트 진행
+                    </button>
                 </div>
             </div>
         </div>

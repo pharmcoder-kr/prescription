@@ -6,6 +6,66 @@ const moment = require('moment');
 const cron = require('node-cron');
 const iconv = require('iconv-lite');
 
+/**
+ * PM/약국 TXT 한글 디코딩
+ * - 유효한 UTF-8이면 UTF-8 사용 (UTF-8을 CP949로 오판하면 모지베이크 발생)
+ * - 아니면 Windows 한국어 기본 CP949, 이어서 EUC-KR
+ */
+function decodeKoreanPrescriptionText(buffer) {
+    if (!buffer || buffer.length === 0) {
+        return { content: '', encoding: 'empty' };
+    }
+
+    let raw = buffer;
+    // UTF-8 BOM
+    if (raw.length >= 3 && raw[0] === 0xEF && raw[1] === 0xBB && raw[2] === 0xBF) {
+        raw = raw.slice(3);
+        try {
+            return { content: new TextDecoder('utf-8', { fatal: true }).decode(raw), encoding: 'utf8-bom' };
+        } catch (_) {
+            return { content: iconv.decode(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), raw]), 'utf8'), encoding: 'utf8' };
+        }
+    }
+
+    // 1) 엄격 UTF-8: 성공하면 최우선 (CP949 오판 방지)
+    try {
+        const utf8 = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+        return { content: utf8, encoding: 'utf8' };
+    } catch (_) {
+        /* not utf-8 */
+    }
+
+    const scoreDecoded = (text) => {
+        if (text == null) return -1e9;
+        const hangul = (text.match(/[가-힣]/g) || []).length;
+        const fffd = (text.match(/\uFFFD/g) || []).length;
+        const controls = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g) || []).length;
+        // 정상 한글 파일은 hangul이 많고 fffd가 거의 없음
+        return hangul * 3 - fffd * 80 - controls * 40;
+    };
+
+    // 2) CP949 / EUC-KR 중 점수 높은 쪽 (PM 기본은 CP949)
+    let best = { content: '', encoding: 'cp949', score: -1e9 };
+    for (const enc of ['cp949', 'euc-kr']) {
+        try {
+            const content = iconv.decode(raw, enc);
+            const score = scoreDecoded(content);
+            if (score > best.score) {
+                best = { content, encoding: enc, score };
+            }
+        } catch (_) {
+            /* ignore */
+        }
+    }
+
+    if (best.score > -1e9) {
+        return { content: best.content, encoding: best.encoding };
+    }
+
+    // 3) 최후: lossy utf8
+    return { content: iconv.decode(raw, 'utf8'), encoding: 'utf8-lossy' };
+}
+
 // 전역 변수
 let savedConnections = {};
 let connectedDevices = {};
@@ -17,6 +77,7 @@ let autoDispensing = false;
 let scanInterval = null;
 let connectionCheckInterval = null;
 let backgroundScanActive = false; // 백그라운드 스캔 상태 추가
+let isNetworkScanInProgress = false; // 네트워크 스캔 중복 실행 방지
 let isCheckingStatus = false; // 연결 상태 확인 중복 실행 방지
 let autoReconnectAttempted = new Map(); // 자동 재연결 시도한 기기들 (시도 횟수 포함)
 let manuallyDisconnectedDevices = new Set(); // 수동으로 연결을 끊은 기기들
@@ -28,8 +89,9 @@ let medicineTransmissionStatus = {}; // 각 약물의 전송상태 저장 (recei
 let connectionCheckDelayTimer = null; // 연결 상태 확인 지연 타이머
 let isDispensingInProgress = false; // 조제 진행 중 플래그
 let dispensingDevices = new Set(); // 조제 중인 기기들의 IP 주소 집합
-let isAutoDispensingInProgress = false; // 자동조제 진행 중 플래그 (중복 실행 방지)
-let autoDispensingQueue = []; // 자동조제 대기열 (처방전 접수번호 배열)
+let isAutoDispensingInProgress = false; // 처방연동조제 진행 중 플래그 (중복 실행 방지)
+let autoDispensingQueue = []; // 처방연동조제 대기열 (처방전 접수번호 배열)
+let autoDeleteTodayOnExit = false; // 종료 시 당일 처방데이터 자동삭제
 let connectionCheckIntervalMs = 15000; // 연결 상태 확인 주기 (기본값: 15초)
 let prescriptionProgram = 'pm3000'; // 처방조제프로그램 (기본값: PM3000)
 let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 방지)
@@ -378,12 +440,11 @@ function incrementTransmissionCount(currentStatus) {
 // 수동조제 전송현황 리스트 관리
 let manualStatusList = [];
 
-function addManualStatus({ syrupName, mac, total }) {
+function addManualStatus({ syrupName, total }) {
     const now = moment().format('HH:mm:ss');
     const entry = {
         time: now,
         syrupName,
-        mac,
         total,
         status: '전송중',
         statusClass: 'manual-status-sending',
@@ -417,7 +478,6 @@ function renderManualStatusList() {
         tr.innerHTML = `
             <td>${entry.time}</td>
             <td>${entry.syrupName}</td>
-            <td>${entry.mac}</td>
             <td>${entry.total}</td>
             <td class="${entry.statusClass}">${entry.status}</td>
         `;
@@ -427,7 +487,7 @@ function renderManualStatusList() {
     for (let i = manualStatusList.length; i < 10; i++) {
         const tr = document.createElement('tr');
         tr.className = 'empty-row';
-        tr.innerHTML = '<td>&nbsp;</td><td></td><td></td><td></td><td></td>';
+        tr.innerHTML = '<td>&nbsp;</td><td></td><td></td><td></td>';
         tbody.appendChild(tr);
     }
 }
@@ -441,6 +501,7 @@ const elements = {
     patientTableBody: document.getElementById('patientTableBody'),
     medicineTableBody: document.getElementById('medicineTableBody'),
     logContainer: document.getElementById('logContainer'),
+    logPanelRow: document.getElementById('logPanelRow'),
     networkTableBody: document.getElementById('networkTableBody'),
     savedList: document.getElementById('savedList'),
     connectedTableBody: document.getElementById('connectedTableBody'),
@@ -459,13 +520,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadMedicineTransmissionStatus(); // 약물별 전송상태 로드 추가
     await loadAutoDispensingSettings();
     await loadPrescriptionProgramSettings(); // 처방조제프로그램 설정 로드 추가
+    await loadPrescriptionDataSettings();
+    await refreshAutoLoginStatus();
     startPeriodicTasks();
     // datePicker 값이 비어있으면 오늘 날짜로 세팅
     if (!elements.datePicker.value) {
         const today = moment().format('YYYY-MM-DD');
         elements.datePicker.value = today;
     }
-    // 초기 로드 시 자동조제 화면의 연결된 기기 상태 업데이트
+    // 초기 로드 시 처방연동조제 화면의 연결된 기기 상태 업데이트
     updateMainPageConnectedDevices();
 });
 
@@ -705,13 +768,29 @@ function initializeEmptyTables() {
     }
 }
 
+function toggleLogPanel() {
+    const row = elements.logPanelRow;
+    if (!row) return;
+    row.classList.toggle('d-none');
+    if (!row.classList.contains('d-none')) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        if (elements.logContainer) {
+            elements.logContainer.scrollTop = elements.logContainer.scrollHeight;
+        }
+    }
+}
+
 // 이벤트 리스너 설정
 function setupEventListeners() {
-    // F12 키 이벤트
     document.addEventListener('keydown', (event) => {
         if (event.key === 'F12') {
             event.preventDefault();
             startDispensing();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'l' || event.key === 'L')) {
+            event.preventDefault();
+            toggleLogPanel();
         }
     });
 
@@ -748,12 +827,21 @@ function setupEventListeners() {
         }
     });
 
-    // 자동 조제 체크박스 이벤트
+    // 처방연동조제 체크박스 이벤트
     elements.autoDispensing.addEventListener('change', async (e) => {
         autoDispensing = e.target.checked;
         await saveAutoDispensingSettings();
-        logMessage(`자동 조제 ${autoDispensing ? '활성화' : '비활성화'}`);
+        logMessage(`처방연동조제 ${autoDispensing ? '활성화' : '비활성화'}`);
     });
+
+    const autoDeleteTodayEl = document.getElementById('autoDeleteTodayOnExit');
+    if (autoDeleteTodayEl) {
+        autoDeleteTodayEl.addEventListener('change', async (e) => {
+            autoDeleteTodayOnExit = e.target.checked;
+            await savePrescriptionDataSettings();
+            logMessage(`종료시 처방데이터 자동삭제 ${autoDeleteTodayOnExit ? '활성화' : '비활성화'}`);
+        });
+    }
 
     // 시럽 최대량 설정 이벤트
     elements.maxSyrupAmount.addEventListener('change', async (e) => {
@@ -790,16 +878,42 @@ function setupEventListeners() {
 }
 
 // 날짜 선택기 설정
+let datePickerInstance = null;
+
+function getPrescriptionDateSet() {
+    const dates = new Set();
+    Object.values(parsedPrescriptions).forEach((p) => {
+        const d = p?.patient?.receipt_date;
+        if (d) dates.add(d);
+    });
+    return dates;
+}
+
+function refreshDatePickerMarkers() {
+    if (datePickerInstance) {
+        datePickerInstance.redraw();
+    }
+}
+
 function setupDatePicker() {
     const today = moment().format('YYYY-MM-DD');
     elements.datePicker.value = today;
-    flatpickr(elements.datePicker, {
+    datePickerInstance = flatpickr(elements.datePicker, {
         locale: 'ko',
         dateFormat: 'Y-m-d',
         defaultDate: today,
         onChange: function(selectedDates, dateStr) {
             elements.datePicker.value = dateStr;
             filterPatientsByDate();
+        },
+        onDayCreate: function(dObj, dStr, fp, dayElem) {
+            const dates = getPrescriptionDateSet();
+            // flatpickr dayElem.dateObj 기준 YYYY-MM-DD
+            const key = moment(dayElem.dateObj).format('YYYY-MM-DD');
+            if (dates.has(key)) {
+                dayElem.classList.add('has-prescription');
+                dayElem.title = '처방데이터 있음';
+            }
         }
     });
 }
@@ -818,7 +932,7 @@ function showMainPage() {
     const manualPage = document.getElementById('manualPage');
     if (manualPage) manualPage.style.display = 'none';
     
-    // 자동조제 화면으로 전환 시 연결된 기기 상태 업데이트
+    // 처방연동조제 화면으로 전환 시 연결된 기기 상태 업데이트
     updateMainPageConnectedDevices();
 }
 
@@ -828,6 +942,7 @@ function showNetworkPage() {
     // 수동조제 페이지도 반드시 숨김
     const manualPage = document.getElementById('manualPage');
     if (manualPage) manualPage.style.display = 'none';
+    refreshAutoLoginStatus();
 }
 
 // 로그 메시지
@@ -1014,6 +1129,50 @@ function scheduleScan() {
     scanInterval = setTimeout(scheduleScan, 10000); // 10초마다 스캔 (5초에서 변경)
 }
 
+// MAC 주소 정규화 (콜론/하이픈 제거)
+function normalizeMacAddress(macStr) {
+    return String(macStr || '').replace(/[:\-]/g, '').toUpperCase();
+}
+
+// 네트워크 스캔 테이블의 동일 MAC/IP 중복 행 정리 (입력값이 있는 행 우선 유지)
+function dedupeNetworkScanTableRows() {
+    if (!elements.networkTableBody) return;
+
+    const byMac = new Map();
+    const byIp = new Map();
+    const rows = Array.from(elements.networkTableBody.querySelectorAll('tr:not(.empty-row)'));
+
+    const rowScore = (row) => {
+        const nick = row.querySelector('input[id^="nickname_"]')?.value?.trim() || '';
+        const code = row.querySelector('input[id^="pillcode_"]')?.value?.trim() || '';
+        return (nick ? 2 : 0) + (code ? 1 : 0);
+    };
+
+    rows.forEach((row) => {
+        const ip = (row.cells[0]?.textContent || '').trim();
+        const mac = (row.cells[1]?.textContent || '').trim();
+        if (!ip || ip === '&nbsp;' || !mac || mac === '&nbsp;') return;
+
+        const macKey = normalizeMacAddress(mac);
+        const keepBetter = (map, key) => {
+            const prev = map.get(key);
+            if (!prev) {
+                map.set(key, row);
+                return;
+            }
+            if (rowScore(row) > rowScore(prev)) {
+                prev.remove();
+                map.set(key, row);
+            } else if (prev !== row) {
+                row.remove();
+            }
+        };
+
+        keepBetter(byMac, macKey);
+        keepBetter(byIp, ip);
+    });
+}
+
 // 네트워크 스캔 (arduino_connector.py 방식 적용)
 async function scanNetwork(silent = false) {
     if (!networkPrefix) {
@@ -1023,248 +1182,249 @@ async function scanNetwork(silent = false) {
         updateScanStatus('네트워크 프리픽스 없음', 'error');
         return;
     }
-    
-    if (!silent) {
-        logMessage(`네트워크 스캔 시작: ${networkPrefix}0/24`);
+
+    // 동시 스캔 방지 (중복 행 추가의 주원인)
+    if (isNetworkScanInProgress) {
+        if (!silent) {
+            logMessage('이미 스캔 중입니다. 완료 후 다시 시도하세요.');
+            updateScanStatus('스캔 중...', 'scanning');
+        }
+        return;
     }
-    updateScanStatus('스캔 중...', 'scanning');
-    
-    // 기존에 발견된 기기들을 유지하기 위해 현재 테이블의 기기 정보를 저장
-    const existingDevices = new Map();
-    const existingRows = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)');
-    existingRows.forEach(row => {
-        const ip = row.cells[0].textContent;
-        const mac = row.cells[1].textContent;
-        if (ip && mac && ip !== '&nbsp;' && mac !== '&nbsp;') {
-            existingDevices.set(mac, {
-                ip: ip,
-                status: row.cells[2].textContent,
-                row: row
-            });
+    isNetworkScanInProgress = true;
+
+    try {
+        if (!silent) {
+            logMessage(`네트워크 스캔 시작: ${networkPrefix}0/24`);
         }
-    });
-    
-    const results = {};
-    const threads = [];
-    
-    // MAC 주소 정규화 함수
-    const normalizeMac = (macStr) => {
-        return macStr.replace(/[:\-]/g, '').toUpperCase();
-    };
-    
-    // IP 체크 함수
-    const checkIP = async (ip) => {
-        try {
-            console.log(`IP 체크 시도: ${ip}`);
-            const response = await axios.get(`http://${ip}`, { 
-                timeout: COMMUNICATION_CONFIG.TIMEOUTS.SCAN,
-                headers: {
-                    'User-Agent': 'SyrupDispenser/1.0'
-                }
-            });
-            console.log(`IP 체크 응답: ${ip} - 상태: ${response.status}, 데이터:`, response.data);
-            
-            if (response.status === 200) {
-                const data = response.data;
-                if (data.status === 'ready' || data.mac) {
-                    console.log(`유효한 기기 발견: ${ip} - MAC: ${data.mac}, 상태: ${data.status}`);
-                    return data;
-                } else {
-                    console.log(`기기 응답이지만 유효하지 않음: ${ip} - 데이터:`, data);
-                }
+        updateScanStatus('스캔 중...', 'scanning');
+
+        // 기존 중복 행 먼저 정리
+        dedupeNetworkScanTableRows();
+
+        // 기존에 발견된 기기들을 유지하기 위해 현재 테이블의 기기 정보를 저장 (정규화 MAC 키)
+        const existingDevices = new Map();
+        const existingRows = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)');
+        existingRows.forEach(row => {
+            const ip = (row.cells[0]?.textContent || '').trim();
+            const mac = (row.cells[1]?.textContent || '').trim();
+            if (ip && mac && ip !== '&nbsp;' && mac !== '&nbsp;') {
+                existingDevices.set(normalizeMacAddress(mac), {
+                    ip,
+                    status: (row.cells[2]?.textContent || '').trim(),
+                    row,
+                    originalMac: mac
+                });
             }
-        } catch (error) {
-            // 타임아웃이나 연결 실패는 무시하되 로그는 남김
-            if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-                console.log(`IP 체크 타임아웃: ${ip}`);
-            } else if (error.code === 'ECONNREFUSED') {
-                console.log(`IP 체크 연결 거부: ${ip}`);
-            } else {
-                console.log(`IP 체크 오류: ${ip} - ${error.message}`);
-            }
-        }
-        return null;
-    };
-    
-    // 모든 IP에 대해 병렬로 체크
-    for (let i = 1; i <= 255; i++) {
-        const ip = `${networkPrefix}${i}`;
-        const promise = checkIP(ip).then(data => {
-            results[ip] = data;
         });
-        threads.push(promise);
-    }
-    
-    // 모든 스캔 완료 대기
-    await Promise.all(threads);
-    
-    // 스캔 결과 로그 출력 (수동 스캔일 때만)
-    let validDeviceCount = 0;
-    for (const [ip, data] of Object.entries(results)) {
-        if (data && data.mac) {
-            validDeviceCount++;
+
+        const results = {};
+        const threads = [];
+
+        // IP 체크 함수
+        const checkIP = async (ip) => {
+            try {
+                console.log(`IP 체크 시도: ${ip}`);
+                const response = await axios.get(`http://${ip}`, {
+                    timeout: COMMUNICATION_CONFIG.TIMEOUTS.SCAN,
+                    headers: {
+                        'User-Agent': 'SyrupDispenser/1.0'
+                    }
+                });
+                console.log(`IP 체크 응답: ${ip} - 상태: ${response.status}, 데이터:`, response.data);
+
+                if (response.status === 200) {
+                    const data = response.data;
+                    if (data.status === 'ready' || data.mac) {
+                        console.log(`유효한 기기 발견: ${ip} - MAC: ${data.mac}, 상태: ${data.status}`);
+                        return data;
+                    } else {
+                        console.log(`기기 응답이지만 유효하지 않음: ${ip} - 데이터:`, data);
+                    }
+                }
+            } catch (error) {
+                // 타임아웃이나 연결 실패는 무시하되 로그는 남김
+                if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+                    console.log(`IP 체크 타임아웃: ${ip}`);
+                } else if (error.code === 'ECONNREFUSED') {
+                    console.log(`IP 체크 연결 거부: ${ip}`);
+                } else {
+                    console.log(`IP 체크 오류: ${ip} - ${error.message}`);
+                }
+            }
+            return null;
+        };
+
+        // 모든 IP에 대해 병렬로 체크
+        for (let i = 1; i <= 255; i++) {
+            const ip = `${networkPrefix}${i}`;
+            const promise = checkIP(ip).then(data => {
+                results[ip] = data;
+            });
+            threads.push(promise);
         }
-    }
-    
-    if (!silent) {
-        logMessage(`=== 스캔 결과 전체 ===`);
+
+        // 모든 스캔 완료 대기
+        await Promise.all(threads);
+
+        // 스캔 결과 로그 출력 (수동 스캔일 때만)
+        let validDeviceCount = 0;
         for (const [ip, data] of Object.entries(results)) {
             if (data && data.mac) {
-                logMessage(`유효한 기기 발견: ${ip} - MAC: ${data.mac} - 상태: ${data.status || 'ready'}`);
+                validDeviceCount++;
             }
         }
-        logMessage(`총 유효한 기기 수: ${validDeviceCount}`);
-    }
-    
-    // 발견된 기기들 처리
-    const foundDevices = {};
-    const uniqueDevices = new Map(); // MAC 주소별로 고유한 기기만 저장
-    
-    for (const [ip, data] of Object.entries(results)) {
-        if (data && data.mac) {
-            const mac = data.mac;
-            const normalizedMac = normalizeMac(mac);
-            
-            // IP 주소가 현재 네트워크 프리픽스와 일치하는지 확인
-            // networkPrefix는 "172.30.1." 형태이므로 IP 주소가 이로 시작하는지 확인
-            if (ip.startsWith(networkPrefix)) {
-                // 중복 MAC 주소 처리 (같은 MAC이 여러 IP에서 발견되면 첫 번째만 유지)
-                if (!uniqueDevices.has(normalizedMac)) {
-                    uniqueDevices.set(normalizedMac, { ip, data, originalMac: mac });
-                    foundDevices[normalizedMac] = ip;
+
+        if (!silent) {
+            logMessage(`=== 스캔 결과 전체 ===`);
+            for (const [ip, data] of Object.entries(results)) {
+                if (data && data.mac) {
+                    logMessage(`유효한 기기 발견: ${ip} - MAC: ${data.mac} - 상태: ${data.status || 'ready'}`);
+                }
+            }
+            logMessage(`총 유효한 기기 수: ${validDeviceCount}`);
+        }
+
+        // 발견된 기기들 처리
+        const foundDevices = {};
+        const uniqueDevices = new Map(); // MAC 주소별로 고유한 기기만 저장
+
+        for (const [ip, data] of Object.entries(results)) {
+            if (data && data.mac) {
+                const mac = data.mac;
+                const normalizedMac = normalizeMacAddress(mac);
+
+                // IP 주소가 현재 네트워크 프리픽스와 일치하는지 확인
+                if (ip.startsWith(networkPrefix)) {
+                    // 중복 MAC 주소 처리 (같은 MAC이 여러 IP에서 발견되면 첫 번째만 유지)
+                    if (!uniqueDevices.has(normalizedMac)) {
+                        uniqueDevices.set(normalizedMac, { ip, data, originalMac: mac });
+                        foundDevices[normalizedMac] = ip;
+                    }
                 }
             }
         }
-    }
-    
-    // 네트워크 테이블 업데이트 (기존 기기 유지하면서 새로운 기기 추가)
-    if (!silent) {
-        logMessage(`네트워크 범위 내 발견된 기기 수: ${uniqueDevices.size}`);
-        logMessage(`=== 네트워크 테이블 업데이트 ===`);
-    }
-    
-    // 기존 테이블에서 빈 행만 제거
-    const emptyRows = elements.networkTableBody.querySelectorAll('tr.empty-row');
-    emptyRows.forEach(row => row.remove());
-    
-    // 새로운 기기들 추가
-    uniqueDevices.forEach((deviceInfo, normalizedMac) => {
-        const { ip, data, originalMac } = deviceInfo;
-        
-        // 이미 테이블에 있는 기기인지 확인
-        const existingDevice = existingDevices.get(originalMac);
-        if (existingDevice) {
-            // IP가 변경된 경우에만 로그 출력
-            if (existingDevice.ip !== ip && !silent) {
-                logMessage(`기존 기기 IP 업데이트: ${existingDevice.ip} -> ${ip} (MAC: ${originalMac})`);
-            }
-            // 기존 행의 IP 업데이트
-            existingDevice.row.cells[0].textContent = ip;
-            
-            // 상태는 조제 중인 경우(dispensingDevices에 포함된 경우)에만 보존하고, 그 외에는 새로운 상태로 업데이트
-            const currentStatus = existingDevice.row.cells[2].textContent;
-            const isDispensing = dispensingDevices.has(existingDevice.deviceInfo.ip);
-            if (isDispensing) {
-                // 조제 중인 상태 유지 (ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지)
+
+        // 네트워크 테이블 업데이트 (기존 기기 유지하면서 새로운 기기 추가)
+        if (!silent) {
+            logMessage(`네트워크 범위 내 발견된 기기 수: ${uniqueDevices.size}`);
+            logMessage(`=== 네트워크 테이블 업데이트 ===`);
+        }
+
+        // 기존 테이블에서 빈 행만 제거
+        const emptyRows = elements.networkTableBody.querySelectorAll('tr.empty-row');
+        emptyRows.forEach(row => row.remove());
+
+        // 새로운/응답한 기기들 반영
+        uniqueDevices.forEach((deviceInfo, normalizedMac) => {
+            const { ip, data, originalMac } = deviceInfo;
+
+            // 이미 테이블에 있는 기기인지 확인 (정규화 MAC)
+            const existingDevice = existingDevices.get(normalizedMac);
+            if (existingDevice) {
+                if (existingDevice.ip !== ip && !silent) {
+                    logMessage(`기존 기기 IP 업데이트: ${existingDevice.ip} -> ${ip} (MAC: ${originalMac})`);
+                }
+                existingDevice.row.cells[0].textContent = ip;
+                existingDevice.row.cells[1].textContent = originalMac;
+
+                const isDispensing = dispensingDevices.has(existingDevice.ip) || dispensingDevices.has(ip);
+                if (!isDispensing) {
+                    existingDevice.row.cells[2].textContent = data.status || 'ready';
+                    for (const [deviceMac, connInfo] of Object.entries(connectedDevices)) {
+                        if (normalizeMacAddress(deviceMac) === normalizedMac) {
+                            connInfo.status = "연결됨";
+                            break;
+                        }
+                    }
+                }
+
+                // 저장 버튼의 IP 갱신
+                const saveBtn = existingDevice.row.querySelector('button[onclick^="saveConnection"]');
+                if (saveBtn) {
+                    saveBtn.setAttribute('onclick', `saveConnection('${originalMac}', '${ip}')`);
+                }
+
+                existingDevices.delete(normalizedMac);
             } else {
-                // 조제 중이 아니면 새로운 상태로 업데이트
-                existingDevice.row.cells[2].textContent = data.status || 'ready';
-                // connectedDevices에서도 상태 업데이트
-                for (const [deviceMac, deviceInfo] of Object.entries(connectedDevices)) {
-                    if (normalizeMac(deviceMac) === normalizedMac) {
-                        deviceInfo.status = "연결됨";
-                        break;
-                    }
+                if (!silent) {
+                    logMessage(`새로운 기기 발견: ${ip} (MAC: ${originalMac})`);
                 }
+
+                const isSaved = Object.keys(savedConnections).some(savedMac =>
+                    normalizeMacAddress(savedMac) === normalizedMac
+                );
+
+                const row = document.createElement('tr');
+                row.dataset.macKey = normalizedMac;
+                row.innerHTML = `
+                    <td>${ip}</td>
+                    <td>${originalMac}</td>
+                    <td>${data.status || 'ready'}</td>
+                    <td>
+                        <input type="text" class="form-control form-control-sm" placeholder="약품명" id="nickname_${originalMac}" ${isSaved ? 'disabled' : ''}>
+                    </td>
+                    <td>
+                        <input type="text" class="form-control form-control-sm" placeholder="약품코드" id="pillcode_${originalMac}" ${isSaved ? 'disabled' : ''}>
+                    </td>
+                    <td>
+                        ${isSaved ?
+                            `<span class="badge bg-success">저장됨</span>` :
+                            `<button class="btn btn-primary btn-sm" onclick="saveConnection('${originalMac}', '${ip}')">저장</button>`
+                        }
+                    </td>
+                `;
+                elements.networkTableBody.appendChild(row);
             }
-            
-            existingDevices.delete(originalMac); // 처리 완료 표시
-        } else {
-            // 새로운 기기가 발견된 경우에만 로그 출력
-            if (!silent) {
-                logMessage(`새로운 기기 발견: ${ip} (MAC: ${originalMac})`);
-            }
-            
-            // 이미 저장된 연결인지 확인
-            const isSaved = Object.keys(savedConnections).some(savedMac => 
-                normalizeMac(savedMac) === normalizedMac
+        });
+
+        // 이번 스캔에서 응답 없는 기기는 제거하지 않고 유지 (상태만 표시)
+        existingDevices.forEach((deviceInfo, macKey) => {
+            const isDispensing = dispensingDevices.has(deviceInfo.ip);
+            if (isDispensing) return;
+
+            const isConnectedDevice = Object.keys(connectedDevices).some(connectedMac =>
+                normalizeMacAddress(connectedMac) === macKey
             );
-            
-            // 이미 연결된 기기인지 확인
-            const isConnected = Object.keys(connectedDevices).some(connectedMac => 
-                normalizeMac(connectedMac) === normalizedMac
-            );
-            
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${ip}</td>
-                <td>${originalMac}</td>
-                <td>${data.status || 'ready'}</td>
-                <td>
-                    <input type="text" class="form-control form-control-sm" placeholder="약품명" id="nickname_${originalMac}" ${isSaved ? 'disabled' : ''}>
-                </td>
-                <td>
-                    <input type="text" class="form-control form-control-sm" placeholder="약품코드" id="pillcode_${originalMac}" ${isSaved ? 'disabled' : ''}>
-                </td>
-                <td>
-                    ${isSaved ? 
-                        `<span class="badge bg-success">저장됨</span>` :
-                        `<button class="btn btn-primary btn-sm" onclick="saveConnection('${originalMac}', '${ip}')">저장</button>`
-                    }
-                </td>
+            deviceInfo.row.cells[2].textContent = isConnectedDevice
+                ? '일시적 응답 없음'
+                : '응답 없음';
+        });
+
+        // 빈 행 추가하여 최소 5줄 유지
+        const currentRows = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length;
+        const emptyRowsNeeded = Math.max(0, 5 - currentRows);
+        for (let i = 0; i < emptyRowsNeeded; i++) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td>&nbsp;</td>
+                <td>&nbsp;</td>
+                <td>&nbsp;</td>
+                <td>&nbsp;</td>
+                <td>&nbsp;</td>
+                <td>&nbsp;</td>
             `;
-            elements.networkTableBody.appendChild(row);
+            emptyRow.classList.add('empty-row');
+            elements.networkTableBody.appendChild(emptyRow);
         }
-    });
-    
-    // 더 이상 응답하지 않는 기기들 제거 (선택사항)
-    existingDevices.forEach((deviceInfo, mac) => {
-        // 연결된 기기는 일시적으로 응답하지 않아도 제거하지 않음
-        const isConnectedDevice = Object.keys(connectedDevices).some(connectedMac => 
-            normalizeMac(connectedMac) === normalizeMac(mac)
-        );
-        
-        if (isConnectedDevice) {
-            // 연결된 기기는 상태를 "일시적 응답 없음"으로 변경하되 테이블에서 제거하지 않음
-            deviceInfo.row.cells[2].textContent = "일시적 응답 없음";
+
+        const totalKept = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length;
+        if (!silent) {
+            logMessage(`스캔 완료: 이번 ${uniqueDevices.size}개 응답 / 테이블 유지 ${totalKept}개`);
+        }
+
+        // 스캔 완료 상태 업데이트 (유지 중인 기기 포함)
+        if (totalKept > 0) {
+            updateScanStatus(`${totalKept}개 유지 (이번 ${uniqueDevices.size}개 응답)`, 'success');
         } else {
-            if (!silent) {
-                logMessage(`응답하지 않는 기기 제거: ${deviceInfo.ip} (MAC: ${mac})`);
-            }
-            deviceInfo.row.remove();
+            updateScanStatus('기기 없음', 'warning');
         }
-    });
-    
-    // 빈 행 추가하여 최소 5줄 유지
-    const currentRows = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length;
-    const emptyRowsNeeded = Math.max(0, 5 - currentRows);
-    for (let i = 0; i < emptyRowsNeeded; i++) {
-        const emptyRow = document.createElement('tr');
-        emptyRow.innerHTML = `
-            <td>&nbsp;</td>
-            <td>&nbsp;</td>
-            <td>&nbsp;</td>
-            <td>&nbsp;</td>
-            <td>&nbsp;</td>
-            <td>&nbsp;</td>
-        `;
-        emptyRow.classList.add('empty-row');
-        elements.networkTableBody.appendChild(emptyRow);
+
+        // 자동 재연결 시도
+        await attemptAutoReconnect(foundDevices, silent);
+    } finally {
+        isNetworkScanInProgress = false;
     }
-    
-    if (!silent) {
-        logMessage(`스캔 완료: ${uniqueDevices.size}개 기기 발견 (총 테이블 기기 수: ${elements.networkTableBody.querySelectorAll('tr:not(.empty-row)').length})`);
-    }
-    
-    // 스캔 완료 상태 업데이트
-    if (uniqueDevices.size > 0) {
-        updateScanStatus(`${uniqueDevices.size}개 기기 발견`, 'success');
-    } else {
-        updateScanStatus('기기 없음', 'warning');
-    }
-    
-    // 자동 재연결 시도
-    await attemptAutoReconnect(foundDevices, silent);
 }
 
 // 자동 재연결 시도 (arduino_connector.py 방식)
@@ -1630,7 +1790,7 @@ function updateSavedList() {
     Object.entries(savedConnections).forEach(([mac, info]) => {
         const item = document.createElement('div');
         item.className = 'list-group-item';
-        item.textContent = `${info.nickname} (MAC: ${mac})`;
+        item.textContent = info.nickname;
         item.dataset.mac = mac;
         elements.savedList.appendChild(item);
     });
@@ -1675,15 +1835,18 @@ function updateConnectedTable() {
             <td>${device.ip}</td>
             <td><span class="${statusClass}">${device.status}</span></td>
             <td>${moment().format('HH:mm:ss')}</td>
+            <td><button class="btn btn-outline-warning btn-sm" onclick="sendDeviceLog('${device.ip}', '${mac}', '${device.nickname}')" title="ESP32 로그를 서버로 전송합니다">
+                <i class="fas fa-exclamation-triangle me-1"></i>문제사항 보내기
+            </button></td>
         `;
         elements.connectedTableBody.appendChild(row);
     });
     
-    // 자동조제 화면의 간소화된 상태도 업데이트
+    // 처방연동조제 화면의 간소화된 상태도 업데이트
     updateMainPageConnectedDevices();
 }
 
-// 자동조제 화면의 간소화된 연결 기기 상태 업데이트
+// 처방연동조제 화면의 간소화된 연결 기기 상태 업데이트
 function updateMainPageConnectedDevices() {
     const container = document.getElementById('mainPageConnectedDevices');
     if (!container) return;
@@ -1848,7 +2011,218 @@ async function loadPrescriptionPath() {
     }
 }
 
-// 자동 조제 설정 저장
+async function refreshAutoLoginStatus() {
+    const statusEl = document.getElementById('autoLoginStatusText');
+    const btn = document.getElementById('disableAutoLoginBtn');
+    if (!statusEl) return;
+    try {
+        const credentials = await ipcRenderer.invoke('auth:get-saved-credentials');
+        if (!credentials || !credentials.username) {
+            statusEl.textContent = '저장된 로그인 정보가 없습니다.';
+            if (btn) btn.disabled = true;
+            return;
+        }
+        const on = credentials.rememberMe !== false;
+        statusEl.textContent = on
+            ? `자동 로그인: 사용 중 (ID: ${credentials.username})`
+            : `자동 로그인: 해제됨 (ID: ${credentials.username})`;
+        if (btn) btn.disabled = !on;
+    } catch (error) {
+        statusEl.textContent = '자동 로그인 상태를 확인할 수 없습니다.';
+        if (btn) btn.disabled = true;
+        logMessage(`자동 로그인 상태 확인 오류: ${error.message}`);
+    }
+}
+
+async function disableAutoLogin() {
+    try {
+        if (!confirm('자동 로그인을 해제할까요?\n다음 실행부터는 로그인 창에서 직접 로그인해야 합니다.')) {
+            return;
+        }
+        const result = await ipcRenderer.invoke('auth:disable-auto-login');
+        await refreshAutoLoginStatus();
+        if (result.success) {
+            await showMessage('info', result.message || '자동 로그인이 해제되었습니다.');
+        } else {
+            await showMessage('warning', result.message || result.error || '자동 로그인 해제에 실패했습니다.');
+        }
+    } catch (error) {
+        await showMessage('error', `자동 로그인 해제 실패: ${error.message}`);
+    }
+}
+
+function getPrescriptionFileExtension() {
+    return prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+}
+
+function listPrescriptionFilesInPath() {
+    if (!prescriptionPath || !fs.existsSync(prescriptionPath)) return [];
+    const ext = getPrescriptionFileExtension();
+    return fs.readdirSync(prescriptionPath)
+        .filter((name) => name.toLowerCase().endsWith(ext))
+        .map((name) => path.join(prescriptionPath, name));
+}
+
+/** 파일에서 YYYYMMDD 날짜 추출 (PM3000: 파일명 앞 8자리, 유팜: OrderDt) */
+function getPrescriptionFileDateKey(filePath) {
+    const ext = getPrescriptionFileExtension();
+    const base = path.basename(filePath, ext);
+    if (prescriptionProgram === 'pm3000') {
+        const m = base.match(/^(\d{8})/);
+        return m ? m[1] : null;
+    }
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const orderDtMatch = content.match(/<OrderDt>([^<]+)<\/OrderDt>/);
+        if (orderDtMatch) {
+            const d = orderDtMatch[1].replace(/[^\d]/g, '');
+            if (d.length >= 8) return d.substring(0, 8);
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    const m = base.match(/(\d{8})/);
+    return m ? m[1] : null;
+}
+
+function removePrescriptionFromMemory(filePath) {
+    const ext = getPrescriptionFileExtension();
+    const receiptNumber = path.basename(filePath, ext);
+    parsedFiles.delete(filePath);
+    if (parsedPrescriptions[receiptNumber]) {
+        delete parsedPrescriptions[receiptNumber];
+    }
+    if (transmissionStatus[receiptNumber] !== undefined) {
+        delete transmissionStatus[receiptNumber];
+    }
+    Object.keys(medicineTransmissionStatus).forEach((key) => {
+        if (key.startsWith(`${receiptNumber}_`)) {
+            delete medicineTransmissionStatus[key];
+        }
+    });
+    autoDispensingQueue = autoDispensingQueue.filter((r) => r !== receiptNumber);
+}
+
+/**
+ * @param {'all'|'today'} mode
+ * @returns {{ deleted: number, failed: number, skipped: number }}
+ */
+function deletePrescriptionFiles(mode) {
+    const files = listPrescriptionFilesInPath();
+    const todayKey = moment().format('YYYYMMDD');
+    let deleted = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const filePath of files) {
+        if (mode === 'today') {
+            const dateKey = getPrescriptionFileDateKey(filePath);
+            if (dateKey !== todayKey) {
+                skipped++;
+                continue;
+            }
+        }
+        try {
+            fs.unlinkSync(filePath);
+            removePrescriptionFromMemory(filePath);
+            deleted++;
+        } catch (error) {
+            failed++;
+            console.error('처방파일 삭제 실패:', filePath, error.message);
+        }
+    }
+
+    saveParsedFiles();
+    saveTransmissionStatus().catch(() => {});
+    if (typeof saveMedicineTransmissionStatus === 'function') {
+        saveMedicineTransmissionStatus().catch(() => {});
+    }
+
+    try {
+        filterPatientsByDate();
+        elements.medicineTableBody.innerHTML = '';
+        // 빈 약물 테이블만 맞춤 (환자 테이블은 filterPatientsByDate가 채움)
+        const medicineRows = elements.medicineTableBody.querySelectorAll('tr').length;
+        for (let i = medicineRows; i < 5; i++) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.classList.add('empty-row');
+            emptyRow.innerHTML = '<td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td>';
+            elements.medicineTableBody.appendChild(emptyRow);
+        }
+    } catch (_) {
+        /* exit 시 DOM 없을 수 있음 */
+    }
+
+    return { deleted, failed, skipped };
+}
+
+async function deleteAllPrescriptionData() {
+    if (!prescriptionPath) {
+        await showMessage('warning', '처방전 파일 경로가 설정되지 않았습니다.');
+        return;
+    }
+    const files = listPrescriptionFilesInPath();
+    if (files.length === 0) {
+        await showMessage('info', '삭제할 처방데이터가 없습니다.');
+        return;
+    }
+    if (!confirm(`처방전 경로의 처방파일 ${files.length}개를 모두 삭제할까요?\n\n경로: ${prescriptionPath}\n\n이 작업은 되돌릴 수 없습니다.`)) {
+        return;
+    }
+    const result = deletePrescriptionFiles('all');
+    logMessage(`처방데이터 삭제 완료: ${result.deleted}개 삭제` + (result.failed ? `, ${result.failed}개 실패` : ''));
+    await showMessage(
+        result.failed ? 'warning' : 'info',
+        `처방데이터 삭제 완료\n삭제: ${result.deleted}개` + (result.failed ? `\n실패: ${result.failed}개` : '')
+    );
+}
+
+/** 종료 시 호출 — 설정이 켜져 있으면 처방 폴더의 처방 파일을 모두 삭제 */
+function cleanupTodayPrescriptionDataOnExit() {
+    try {
+        if (!autoDeleteTodayOnExit) {
+            return { skipped: true, reason: 'disabled' };
+        }
+        if (!prescriptionPath) {
+            return { skipped: true, reason: 'no_path' };
+        }
+        const result = deletePrescriptionFiles('all');
+        console.log('[EXIT] 처방데이터 자동삭제(폴더 전체):', result);
+        return { skipped: false, ...result };
+    } catch (error) {
+        console.error('[EXIT] 처방데이터 자동삭제 실패:', error);
+        return { skipped: false, error: error.message };
+    }
+}
+
+async function savePrescriptionDataSettings() {
+    try {
+        const settings = { autoDeleteTodayOnExit };
+        const filePath = await getConfigFilePath('prescription_data_settings.json');
+        fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
+    } catch (error) {
+        logMessage(`처방데이터 설정 저장 오류: ${error.message}`);
+    }
+}
+
+async function loadPrescriptionDataSettings() {
+    try {
+        const filePath = await getConfigFilePath('prescription_data_settings.json');
+        const el = document.getElementById('autoDeleteTodayOnExit');
+        if (fs.existsSync(filePath)) {
+            const settings = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            autoDeleteTodayOnExit = !!settings.autoDeleteTodayOnExit;
+        } else {
+            autoDeleteTodayOnExit = false;
+        }
+        if (el) el.checked = autoDeleteTodayOnExit;
+    } catch (error) {
+        autoDeleteTodayOnExit = false;
+        logMessage(`처방데이터 설정 로드 오류: ${error.message}`);
+    }
+}
+
+// 처방연동조제 설정 저장
 async function saveAutoDispensingSettings() {
     try {
         const settings = {
@@ -1857,13 +2231,13 @@ async function saveAutoDispensingSettings() {
         };
         const filePath = await getConfigFilePath('auto_dispensing_settings.json');
         fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
-        logMessage(`자동 조제 설정 저장됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
+        logMessage(`처방연동조제 설정 저장됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
     } catch (error) {
-        logMessage(`자동 조제 설정 저장 중 오류: ${error.message}`);
+        logMessage(`처방연동조제 설정 저장 중 오류: ${error.message}`);
     }
 }
 
-// 자동 조제 설정 로드
+// 처방연동조제 설정 로드
 async function loadAutoDispensingSettings() {
     try {
         const filePath = await getConfigFilePath('auto_dispensing_settings.json');
@@ -1873,17 +2247,17 @@ async function loadAutoDispensingSettings() {
             maxSyrupAmount = settings.maxSyrupAmount || 100;
             elements.autoDispensing.checked = autoDispensing;
             elements.maxSyrupAmount.value = maxSyrupAmount;
-            logMessage(`자동 조제 설정 로드됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
+            logMessage(`처방연동조제 설정 로드됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
         } else {
             // 기본값 설정
             autoDispensing = false;
             maxSyrupAmount = 100;
             elements.autoDispensing.checked = false;
             elements.maxSyrupAmount.value = maxSyrupAmount;
-            logMessage('자동 조제 설정 파일이 없어 기본값으로 설정됨: 비활성화, 시럽 최대량: 100mL');
+            logMessage('처방연동조제 설정 파일이 없어 기본값으로 설정됨: 비활성화, 시럽 최대량: 100mL');
         }
     } catch (error) {
-        logMessage(`자동 조제 설정 로드 중 오류: ${error.message}`);
+        logMessage(`처방연동조제 설정 로드 중 오류: ${error.message}`);
         // 오류 발생 시 기본값 설정
         autoDispensing = false;
         maxSyrupAmount = 100;
@@ -1898,13 +2272,7 @@ async function loadPrescriptionProgramSettings() {
         const filePath = await getConfigFilePath('prescription_program_settings.json');
         if (fs.existsSync(filePath)) {
             const settings = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            // 유팜은 현재 비활성화 상태이므로 pm3000으로 강제 설정
-            if (settings.prescriptionProgram === 'upam') {
-                prescriptionProgram = 'pm3000';
-                logMessage('유팜은 현재 계약 진행 중으로 비활성화되어 있습니다. PM3000, 팜플러스20으로 설정됩니다.');
-            } else {
-                prescriptionProgram = settings.prescriptionProgram || 'pm3000';
-            }
+            prescriptionProgram = settings.prescriptionProgram || 'pm3000';
             const programSelect = document.getElementById('prescriptionProgram');
             if (programSelect) {
                 programSelect.value = prescriptionProgram;
@@ -1948,13 +2316,6 @@ async function savePrescriptionProgramSettings() {
 async function onPrescriptionProgramChanged() {
     const programSelect = document.getElementById('prescriptionProgram');
     if (programSelect) {
-        // 유팜 선택 시 비활성화 처리 (계약 완료 후 활성화 예정)
-        // if (programSelect.value === 'upam') {
-        //     alert('유팜은 현재 계약 진행 중으로 사용할 수 없습니다. 계약이 완료되면 다시 활성화됩니다.');
-        //     programSelect.value = prescriptionProgram; // 이전 값으로 되돌림
-        //     return;
-        // }
-        
         prescriptionProgram = programSelect.value;
         await savePrescriptionProgramSettings();
         logMessage(`처방조제프로그램 변경됨: ${prescriptionProgram === 'pm3000' ? 'PM3000, 팜플러스20' : '유팜'}`);
@@ -2023,6 +2384,7 @@ function parseAllPrescriptionFiles() {
         
         
         filterPatientsByDate();
+        refreshDatePickerMarkers();
     } catch (error) {
         logMessage(`처방전 파일 처방전연동 중 오류: ${error.message}`);
     }
@@ -2031,14 +2393,78 @@ function parseAllPrescriptionFiles() {
 /**
  * 이벤트 전송 없이 파일 파싱만 (프로그램 시작 시 사용)
  */
+/** 처방 1회량 등 소수 허용 숫자 파싱 */
+function parseDoseNumber(value) {
+    const n = parseFloat(String(value ?? '').trim().replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+}
+
+/** 1회량 × 횟수 × 일수 (표시용, 원처방 소수 유지) */
+function calcPrescriptionTotalMl(volume, daily, period) {
+    const total = parseDoseNumber(volume) * (parseInt(daily, 10) || 0) * (parseInt(period, 10) || 0);
+    // 부동소수 노이즈만 정리 (예: 2.5*2*5 → 25)
+    return Math.round(total * 1000) / 1000;
+}
+
+/** ESP32 전달용: 소수 첫째자리에서 올림한 정수 mL */
+function volumeForEsp32(totalMl) {
+    const n = Number(totalMl);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.ceil(n);
+}
+
+function formatDoseDisplay(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return value;
+    if (Number.isInteger(n)) return String(n);
+    return String(parseFloat(n.toFixed(3)));
+}
+
+function parseMedicineFieldsFromParts(parts, index) {
+    // 7필드: code, name, volume, daily, period, date, line
+    // 8필드: code, name, volume, daily, period, total, date, line
+    if (parts.length === 7) {
+        const volume = parseDoseNumber(parts[2]);
+        const daily = parseInt(parts[3], 10) || 0;
+        const period = parseInt(parts[4], 10) || 0;
+        return {
+            pill_code: parts[0],
+            pill_name: parts[1],
+            volume,
+            daily,
+            period,
+            total: calcPrescriptionTotalMl(volume, daily, period),
+            date: parts[5],
+            line_number: parseInt(parts[6], 10) || (index + 1)
+        };
+    }
+    if (parts.length >= 8) {
+        const volume = parseDoseNumber(parts[2]);
+        const daily = parseInt(parts[3], 10) || 0;
+        const period = parseInt(parts[4], 10) || 0;
+        // 파일에 total이 있어도 원처방 1회량 기준으로 재계산 (정수 절삭 방지)
+        return {
+            pill_code: parts[0],
+            pill_name: parts[1],
+            volume,
+            daily,
+            period,
+            total: calcPrescriptionTotalMl(volume, daily, period),
+            date: parts[6],
+            line_number: parseInt(parts[7], 10) || (index + 1)
+        };
+    }
+    return null;
+}
+
 function parsePrescriptionFileWithoutEvent(filePath) {
     // 프로그램 시작 시에는 parsedFiles 체크 없이 항상 파싱 (리스트 표시용)
     console.log(`🟢 parsePrescriptionFileWithoutEvent 호출: ${path.basename(filePath)}`);
     
     try {
         const buffer = fs.readFileSync(filePath);
-        const content = buffer.toString('utf8');
-        const lines = content.split('\n');
+        const { content } = decodeKoreanPrescriptionText(buffer);
+        const lines = content.split(/\r?\n/);
         
         console.log(`📄 파일 라인 수: ${lines.length}`);
         if (lines.length < 2) {
@@ -2056,20 +2482,11 @@ function parsePrescriptionFileWithoutEvent(filePath) {
             const receiptNumber = parts[2];
             
             const medicines = lines.slice(1).map((line, index) => {
-                const parts = line.trim().split('\\');
-                if (parts.length >= 8) {
-                    return {
-                        pill_code: parts[0],
-                        pill_name: parts[1],
-                        volume: parseInt(parts[2]),
-                        daily: parseInt(parts[3]),
-                        period: parseInt(parts[4]),
-                        total: parseInt(parts[5]),
-                        date: parts[6],
-                        line_number: parseInt(parts[7])
-                    };
+                let medParts = line.trim().split('\\');
+                if (medParts.length < 7 && line.includes('₩')) {
+                    medParts = line.trim().split('₩');
                 }
-                return null;
+                return parseMedicineFieldsFromParts(medParts, index);
             }).filter(medicine => medicine !== null);
             
             medicines.sort((a, b) => a.line_number - b.line_number);
@@ -2152,60 +2569,12 @@ function parsePrescriptionFile(filePath) {
         const receiptNumber = path.basename(filePath, fileExtension);
         
         if (prescriptionProgram === 'pm3000') {
-            // PM3000, 팜플러스20 - TXT 파일 파싱
-            let decoded = false;
-            let bestContent = null;
-            let bestEncoding = 'utf8';
-            // 인코딩 우선순위: cp949 → euc-kr → utf8
-            const encodings = ['cp949', 'euc-kr', 'utf8'];
+            // PM3000, 팜플러스20 - TXT 파일 파싱 (UTF-8 우선, 아니면 CP949)
+            const decoded = decodeKoreanPrescriptionText(buffer);
+            const content = decoded.content;
+            console.log(`🔤 TXT 디코딩: ${path.basename(filePath)} → ${decoded.encoding}`);
 
-            for (const encoding of encodings) {
-                try {
-                    const testContent = iconv.decode(buffer, encoding);
-                    // 첫 번째 줄(환자명) 추출
-                    const firstLine = testContent.split('\n')[0]?.trim() || '';
-                    
-                    // 첫 줄이 유효한지 확인 (빈 줄이 아니고, 너무 짧지 않음)
-                    if (firstLine.length === 0 || firstLine.length > 100) {
-                        continue;
-                    }
-                    
-                    // 깨진 문자 확인 (인코딩 오류 시 나타나는 특수 문자들)
-                    const hasBrokenChars = /[\uFFFD\u0000-\u001F\u007F-\u009F]/.test(firstLine);
-                    if (hasBrokenChars) {
-                        continue; // 깨진 문자가 있으면 이 인코딩은 제외
-                    }
-                    
-                    // 한글이 포함되어 있는지 확인
-                    const hasKorean = /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(firstLine);
-                    
-                    if (hasKorean) {
-                        // 한글이 제대로 보이면 이 인코딩 사용
-                        content = testContent;
-                        bestContent = testContent;
-                        bestEncoding = encoding;
-                        decoded = true;
-                        break;
-                    } else if (!decoded) {
-                        // 한글이 없어도 깨지지 않았으면 후보로 저장
-                        bestContent = testContent;
-                        bestEncoding = encoding;
-                    }
-                } catch (error) {
-                    continue;
-                }
-            }
-            
-            if (!decoded) {
-                // 디코딩 실패 시 최선의 후보 사용 또는 utf8 기본값
-                if (bestContent) {
-                    content = bestContent;
-                } else {
-                    content = iconv.decode(buffer, 'utf8');
-                }
-            }
-
-            const lines = content.toString().split('\n').filter(line => line.trim());
+            const lines = content.toString().split(/\r?\n/).filter(line => line.trim());
             if (lines.length === 0) return;
             
             const patientName = lines[0].trim();
@@ -2228,58 +2597,19 @@ function parsePrescriptionFile(filePath) {
             const medicines = lines.slice(1).map((line, index) => {
                 // 백슬래시로 split 시도
                 let parts = line.trim().split('\\');
-                
-                if (parts.length === 7) {
-                    // 팜플러스20 형식: 7개 필드 (pill_code, pill_name, volume, daily, period, date, line_number)
-                    // total이 없으므로 계산
-                    const volume = parseInt(parts[2]) || 0;
-                    const daily = parseInt(parts[3]) || 0;
-                    const period = parseInt(parts[4]) || 0;
-                    return {
-                        pill_code: parts[0],
-                        pill_name: parts[1],
-                        volume: volume,
-                        daily: daily,
-                        period: period,
-                        total: volume * daily * period, // total은 계산
-                        date: parts[5],
-                        line_number: parseInt(parts[6]) || (index + 1)
-                    };
-                } else if (parts.length >= 8) {
-                    // PM3000 형식: 8개 필드 (pill_code, pill_name, volume, daily, period, total, date, line_number)
-                    return {
-                        pill_code: parts[0],
-                        pill_name: parts[1],
-                        volume: parseInt(parts[2]),
-                        daily: parseInt(parts[3]),
-                        period: parseInt(parts[4]),
-                        total: parseInt(parts[5]),
-                        date: parts[6],
-                        line_number: parseInt(parts[7])
-                    };
-                } else if (line.includes('₩')) {
-                    // 원화 기호를 구분자로 사용하는 경우 (7개 필드)
+                let medicine = parseMedicineFieldsFromParts(parts, index);
+
+                if (!medicine && line.includes('₩')) {
+                    // 원화 기호를 구분자로 사용하는 경우
                     parts = line.trim().split('₩');
-                    if (parts.length >= 7) {
-                        const volume = parseInt(parts[2]) || 0;
-                        const daily = parseInt(parts[3]) || 0;
-                        const period = parseInt(parts[4]) || 0;
-                        return {
-                            pill_code: parts[0],
-                            pill_name: parts[1],
-                            volume: volume,
-                            daily: daily,
-                            period: period,
-                            total: volume * daily * period,
-                            date: parts[5],
-                            line_number: parseInt(parts[6]) || (index + 1)
-                        };
-                    }
+                    medicine = parseMedicineFieldsFromParts(parts, index);
                 }
-                
-                // 파싱 실패 시 로그 출력
-                logMessage(`약물 파싱 실패: ${line.substring(0, 50)}... (필드 수: ${parts.length})`);
-                return null;
+
+                if (!medicine) {
+                    logMessage(`약물 파싱 실패: ${line.substring(0, 50)}... (필드 수: ${parts.length})`);
+                    return null;
+                }
+                return medicine;
             }).filter(medicine => medicine !== null);
             
             medicines.sort((a, b) => a.line_number - b.line_number);
@@ -2300,7 +2630,7 @@ function parsePrescriptionFile(filePath) {
             
         } else {
             // 유팜 - XML 파일 파싱
-            content = buffer.toString('utf8');
+            content = decodeKoreanPrescriptionText(buffer).content;
             
             // XML 파싱을 위한 간단한 정규식 사용
             const orderNumMatch = content.match(/<OrderNum>([^<]+)<\/OrderNum>/);
@@ -2357,10 +2687,10 @@ function parsePrescriptionFile(filePath) {
                     if (codeMatch && medNmMatch && takeDaysMatch && doseMatch && dayTakeCntMatch) {
                         const pill_code = codeMatch[1];
                         const pill_name = medNmMatch[1];
-                        const period = parseInt(takeDaysMatch[1]);
-                        const volume = parseFloat(doseMatch[1]);
-                        const daily = parseInt(dayTakeCntMatch[1]);
-                        const total = Math.round(volume * daily * period); // 총량 계산
+                        const period = parseInt(takeDaysMatch[1], 10) || 0;
+                        const volume = parseDoseNumber(doseMatch[1]);
+                        const daily = parseInt(dayTakeCntMatch[1], 10) || 0;
+                        const total = calcPrescriptionTotalMl(volume, daily, period);
                         
                         medicines.push({
                             pill_code: pill_code,
@@ -2391,7 +2721,7 @@ function parsePrescriptionFile(filePath) {
             saveParsedFiles(); // parsedFiles 저장
         }
         
-        // 자동 조제 트리거는 처방전 모니터링에서 처리하도록 변경
+        // 처방연동조제 트리거는 처방전 모니터링에서 처리하도록 변경
         // 여기서는 즉시 startDispensing을 호출하지 않음
     } catch (error) {
         logMessage(`파일 처방전연동 중 오류: ${error.message}`);
@@ -2492,6 +2822,7 @@ function filterPatientsByDate() {
     }
     
     logMessage(`날짜 필터링 완료: ${foundCount}명의 환자 발견 (최신 순 정렬)`);
+    refreshDatePickerMarkers();
 }
 
 // 환자 약물 정보 로드
@@ -2541,10 +2872,10 @@ function loadPatientMedicines(receiptNumber) {
                 </td>
                 <td>${medicine.pill_name}</td>
                 <td>${medicine.pill_code}</td>
-                <td>${medicine.volume}</td>
+                <td>${formatDoseDisplay(medicine.volume)}</td>
                 <td>${medicine.daily}</td>
                 <td>${medicine.period}</td>
-                <td>${medicine.total}</td>
+                <td>${formatDoseDisplay(medicine.total)}</td>
                 <td>${statusBadge}</td>
             `;
             row.dataset.pillCode = medicine.pill_code;
@@ -2582,6 +2913,25 @@ function loadPatientMedicines(receiptNumber) {
     
     // 환자 테이블의 전송상태 업데이트 (약물 정보 변경 시 자동 반영)
     updatePatientTransmissionStatus(receiptNumber);
+
+    // 새 처방전 약물 표시 시 스크롤을 맨 위로 (이전 스크롤로 첫 줄이 가려지지 않게)
+    const medicineScroll = elements.medicineTableBody?.closest('.table-container');
+    if (medicineScroll) medicineScroll.scrollTop = 0;
+}
+
+/** 환자 목록에서 해당 접수번호를 선택하고 약물 리스트를 갱신 */
+function selectPatientAndLoadMedicines(receiptNumber) {
+    if (!receiptNumber) return false;
+    const row = document.querySelector(`#patientTableBody tr[data-receipt-number="${receiptNumber}"]`);
+    if (!row || row.classList.contains('empty-row')) return false;
+
+    document.querySelectorAll('#patientTableBody tr').forEach(r => r.classList.remove('table-primary'));
+    row.classList.add('table-primary');
+    loadPatientMedicines(receiptNumber);
+
+    const patientScroll = elements.patientTableBody?.closest('.table-container');
+    if (patientScroll) patientScroll.scrollTop = 0;
+    return true;
 }
 
 // 전체 선택 체크박스 토글
@@ -2704,13 +3054,13 @@ function processNextInQueue() {
         
         // 약물 정보 로드
         loadPatientMedicines(receiptNumber);
-        logMessage(`자동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
+        logMessage(`처방연동조제: 환자 ${prescription.patient.name} 선택 및 약물 정보 로드 완료`);
         
         // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
         // 백그라운드에서도 작동하도록 setTimeout 사용 (requestAnimationFrame은 백그라운드에서 일시정지됨)
         setTimeout(() => {
             logMessage(`조제를 시작합니다. 환자: ${prescription.patient.name}`);
-            startDispensingInternal(receiptNumber, true); // true: 자동조제 플래그
+            startDispensingInternal(receiptNumber, true); // true: 처방연동조제 플래그
         }, 0);
     } else {
         logMessage(`환자 행을 찾을 수 없음: ${receiptNumber}`);
@@ -2722,25 +3072,25 @@ function processNextInQueue() {
 
 // 조제 시작
 async function startDispensing(isAuto = false) {
-    // 자동조제 중복 실행 방지
+    // 처방연동조제 중복 실행 방지
     if (isAuto && isAutoDispensingInProgress) {
-        logMessage('자동조제가 이미 진행 중입니다. 중복 실행을 방지합니다.');
+        logMessage('처방연동조제가 이미 진행 중입니다. 중복 실행을 방지합니다.');
         return;
     }
     
     let selectedPatient = document.querySelector('#patientTableBody tr.table-primary');
     if (!selectedPatient && isAuto) {
-        // 자동조제 모드일 때는 오늘 날짜의 첫 번째 환자 자동 선택
+        // 처방연동조제 모드일 때는 오늘 날짜의 첫 번째 환자 자동 선택
         selectedPatient = document.querySelector('#patientTableBody tr');
         if (selectedPatient) {
             selectedPatient.classList.add('table-primary');
-            // 자동조제 모드일 때는 약물 정보도 자동으로 로드
+            // 처방연동조제 모드일 때는 약물 정보도 자동으로 로드
             const receiptNumber = selectedPatient.dataset.receiptNumber;
             if (receiptNumber) {
                 loadPatientMedicines(receiptNumber);
-                logMessage(`자동조제: 환자 ${receiptNumber} 선택 및 약물 정보 로드 완료`);
+                logMessage(`처방연동조제: 환자 ${receiptNumber} 선택 및 약물 정보 로드 완료`);
                 
-                // 자동조제 진행 중 플래그 설정
+                // 처방연동조제 진행 중 플래그 설정
                 isAutoDispensingInProgress = true;
                 
                 // 약물 정보 로드 후 즉시 조제 시작 (DOM 업데이트를 위한 최소 지연)
@@ -2768,7 +3118,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     const prescription = parsedPrescriptions[receiptNumber];
     if (!prescription) {
         showMessage('error', '처방전 정보를 찾을 수 없습니다.');
-        // 자동조제 흐름이 비정상 종료될 때 대기열 진행이 멈추지 않도록 복구
+        // 처방연동조제 흐름이 비정상 종료될 때 대기열 진행이 멈추지 않도록 복구
         isDispensingInProgress = false;
         if (isAuto) {
             isAutoDispensingInProgress = false;
@@ -2801,7 +3151,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     dispensingDevices.clear(); // 조제 중인 기기 목록 초기화
     startConnectionCheckDelay(5); // 5초 동안 연결 상태 확인 지연
     
-    // 자동조제 모드일 때는 모든 등록된 약물을 자동으로 선택
+    // 처방연동조제 모드일 때는 모든 등록된 약물을 자동으로 선택
     if (isAuto) {
         prescription.medicines.forEach(medicine => {
             const checkbox = document.querySelector(`.medicine-checkbox[data-pill-code="${medicine.pill_code}"]`);
@@ -2809,7 +3159,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
                 checkbox.checked = true;
             }
         });
-        logMessage('자동조제: 모든 등록된 약물을 자동으로 선택했습니다.');
+        logMessage('처방연동조제: 모든 등록된 약물을 자동으로 선택했습니다.');
     }
     
     // 선택된 약물들만 필터링
@@ -2820,8 +3170,8 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     
     if (selectedMedicines.length === 0) {
         if (isAuto) {
-            logMessage('자동조제: 선택 가능한 약물이 없습니다. (모든 약물이 등록되지 않았거나 연결되지 않음)');
-            // 자동조제에서 선택 약물이 없을 때 플래그 원복 및 다음 처방전 진행
+            logMessage('처방연동조제: 선택 가능한 약물이 없습니다. (모든 약물이 등록되지 않았거나 연결되지 않음)');
+            // 처방연동조제에서 선택 약물이 없을 때 플래그 원복 및 다음 처방전 진행
             isDispensingInProgress = false;
             dispensingDevices.clear();
             cancelConnectionCheckDelay();
@@ -2855,20 +3205,21 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, '등록되지 않은 약물');
     }
 
-    // 시럽 최대량 초과 검증
+    // 시럽 최대량 초과 검증 (ESP32 전달량은 올림 정수 기준)
     const overLimitMedicines = registeredMedicines.filter(medicine => {
-        return medicine.total > maxSyrupAmount;
+        return volumeForEsp32(medicine.total) > maxSyrupAmount;
     });
 
     const validMedicines = registeredMedicines.filter(medicine => {
-        return medicine.total <= maxSyrupAmount;
+        return volumeForEsp32(medicine.total) <= maxSyrupAmount;
     });
 
     // 최대량을 초과하는 약물들을 실패 상태로 표시
     if (overLimitMedicines.length > 0) {
-        const overLimitNames = overLimitMedicines.map(m => `${m.pill_name}(${m.total}mL)`).join('\n• ');
+        const overLimitNames = overLimitMedicines.map(m => `${m.pill_name}(${formatDoseDisplay(m.total)}→${volumeForEsp32(m.total)}mL)`).join('\n• ');
         for (const medicine of overLimitMedicines) {
-            logMessage(`${medicine.pill_name}은(는) 총량 ${medicine.total}mL가 설정된 최대량 ${maxSyrupAmount}mL를 초과하므로 전송에서 제외됩니다.`);
+            const sendVol = volumeForEsp32(medicine.total);
+            logMessage(`${medicine.pill_name}은(는) 총량 ${formatDoseDisplay(medicine.total)}mL(전송 ${sendVol}mL)가 설정된 최대량 ${maxSyrupAmount}mL를 초과하므로 전송에서 제외됩니다.`);
             // 팝업 대신 전송 상태에 표시
             await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, '최대량 초과');
         }
@@ -2919,7 +3270,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
             showMessage('warning', '전송할 수 있는 약물이 없습니다.');
         }
         
-        // 자동조제 큐를 막지 않도록 플래그 및 상태를 복구 후 다음 처방전 처리
+        // 처방연동조제 큐를 막지 않도록 플래그 및 상태를 복구 후 다음 처방전 처리
         isDispensingInProgress = false;
         dispensingDevices.clear();
         cancelConnectionCheckDelay();
@@ -2946,7 +3297,8 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
             device.pill_code === medicine.pill_code && device.status === '연결됨'
         );
         
-        logMessage(`병렬 전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
+        const sendVolume = volumeForEsp32(medicine.total);
+        logMessage(`병렬 전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${formatDoseDisplay(medicine.total)}mL → ESP ${sendVolume}mL`);
         
         // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
         dispensingDevices.add(connectedDevice.ip); // 조제 중인 기기 목록에 추가 (연결 상태 확인 시 참고용)
@@ -2957,7 +3309,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         try {
             const data = {
                 patient_name: prescription.patient.name,
-                total_volume: medicine.total
+                total_volume: sendVolume
             };
             
             // 요청 재시도(404/Network Error/timeout 포함)
@@ -3056,7 +3408,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         // 조제 완료 후 연결 상태 확인 재개
         if (dispensingDevices.size === 0) {
             isDispensingInProgress = false;
-            isAutoDispensingInProgress = false; // 자동조제 플래그 해제
+            isAutoDispensingInProgress = false; // 처방연동조제 플래그 해제
             cancelConnectionCheckDelay(); // 지연 타이머 취소
             setNormalConnectionCheck(); // 일반 모드로 전환
             logMessage('모든 조제 완료 - 일반 연결 상태 확인 모드로 전환');
@@ -3070,7 +3422,7 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         
     } catch (error) {
         logMessage(`조제 중 오류 발생: ${error.message}`);
-        isAutoDispensingInProgress = false; // 오류 발생 시에도 자동조제 플래그 해제
+        isAutoDispensingInProgress = false; // 오류 발생 시에도 처방연동조제 플래그 해제
         
         // 오류 발생 시에도 조제 중인 기기들을 정리
         dispensingDevices.clear();
@@ -3512,6 +3864,61 @@ function updateDeviceStatus(ip, status) {
     updateMedicineColors();
 }
 
+// ── 문제사항 보내기: ESP32 로그 수집 → 서버 전송 ─────────────────────────────
+async function sendDeviceLog(ip, mac, nickname) {
+    const btn = event?.target?.closest('button');
+    const originalHtml = btn?.innerHTML;
+    try {
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>전송 중...';
+        }
+
+        logMessage(`🔄 ${nickname}(${ip}) 로그 수집 시작...`);
+
+        let deviceLog = '(로그 수집 실패)';
+        try {
+            const response = await axios.get(`http://${ip}/logs`, { timeout: 5000 });
+            deviceLog = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+        } catch (err) {
+            deviceLog = `(로그 요청 실패: ${err.message})`;
+            logMessage(`⚠️ ${nickname} 로그 수집 실패: ${err.message}`);
+        }
+
+        let versionInfo = null;
+        try {
+            const vr = await axios.get(`http://${ip}/version`, { timeout: 3000 });
+            versionInfo = vr.data;
+        } catch (_) { /* 무시 */ }
+
+        const result = await ipcRenderer.invoke('api:send-device-log', {
+            mac,
+            ip,
+            nickname,
+            firmware_version: versionInfo?.version || null,
+            firmware_model: versionInfo?.model || null,
+            hmi_version: versionInfo?.hmi_version || null,
+            log_text: deviceLog
+        });
+
+        if (result.success) {
+            logMessage(`✅ ${nickname} 문제사항 전송 완료`);
+            await showMessage('success', `${nickname}의 로그가 서버로 전송되었습니다.\n개발팀에서 확인 후 조치하겠습니다.`);
+        } else {
+            logMessage(`❌ ${nickname} 문제사항 전송 실패: ${result.error}`);
+            await showMessage('error', `전송 실패: ${result.error || '서버 연결 오류'}`);
+        }
+    } catch (err) {
+        logMessage(`❌ 문제사항 보내기 오류: ${err.message}`);
+        await showMessage('error', `오류가 발생했습니다: ${err.message}`);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+}
+
 // 처방전 파일 모니터링
 let prescriptionWatcher = null;
 let prescriptionPollInterval = null;
@@ -3574,8 +3981,13 @@ function processNewPrescriptionFile(filePath) {
         const formatted = `${datePart.substring(0,4)}-${datePart.substring(4,6)}-${datePart.substring(6,8)}`;
         elements.datePicker.value = formatted;
         filterPatientsByDate();
+
+        // 새 처방전을 자동 선택하고 약물 리스트를 즉시 갱신
+        if (selectPatientAndLoadMedicines(receiptNumber)) {
+            logMessage(`새 처방전 선택 및 약물 리스트 갱신: ${receiptNumber}`);
+        }
         
-        // 자동 조제가 활성화되어 있고, 새로 추가된 처방전이 현재 선택된 날짜와 일치하면 자동 조제 시작
+        // 처방연동조제가 활성화되어 있고, 새로 추가된 처방전이 현재 선택된 날짜와 일치하면 처방연동조제 시작
         if (autoDispensing) {
             const prescription = parsedPrescriptions[receiptNumber];
             if (prescription && prescription.patient.receipt_date === formatted) {
@@ -3589,7 +4001,7 @@ function processNewPrescriptionFile(filePath) {
                 });
                 
                 if (!hasRegisteredMedicine) {
-                    logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 시럽조제기에 매핑되는 약물이 없어 자동조제 대기열에 추가하지 않습니다.`);
+                    logMessage(`처방전 '${receiptNumber}${fileExt}'은(는) 등록된 시럽조제기에 매핑되는 약물이 없어 처방연동조제 대기열에 추가하지 않습니다.`);
                     return;
                 }
                 
@@ -4053,6 +4465,11 @@ async function retrySelectedMedicines(selectedMedicines) {
     }
     
     const receiptNumber = selectedPatient.dataset.receiptNumber;
+    const prescription = parsedPrescriptions[receiptNumber];
+    if (!prescription) {
+        showMessage('error', '처방전 정보를 찾을 수 없습니다.');
+        return;
+    }
     
     logMessage(`선택된 약물 ${selectedMedicines.length}개를 병렬 재전송합니다.`);
     
@@ -4082,14 +4499,15 @@ async function retrySelectedMedicines(selectedMedicines) {
             };
         }
         
-        logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
+        const sendVolume = volumeForEsp32(medicine.total);
+        logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${formatDoseDisplay(medicine.total)}mL → ESP ${sendVolume}mL`);
         
         // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
         
         try {
-            const data = `TV${medicine.total} FF FF FF`;
             const response = await makeStableRequest(`http://${connectedDevice.ip}/dispense`, {
-                amount: data
+                patient_name: prescription.patient.name,
+                total_volume: sendVolume
             }, {
                 timeout: COMMUNICATION_CONFIG.TIMEOUTS.RETRY
             });
@@ -4254,14 +4672,15 @@ async function retryFailedMedicines() {
             device.pill_code === medicine.pill_code && device.status === '연결됨'
         );
         
-        logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${medicine.total}`);
+        const sendVolume = volumeForEsp32(medicine.total);
+        logMessage(`병렬 재전송 시작: ${medicine.pill_name}, 코드: ${medicine.pill_code}, 총량: ${formatDoseDisplay(medicine.total)}mL → ESP ${sendVolume}mL`);
         
         // 조제 중에도 ESP32는 듀얼코어로 통신 가능하므로 상태는 "연결됨" 유지
         
         try {
-            const data = `TV${medicine.total} FF FF FF`;
             const response = await makeStableRequest(`http://${connectedDevice.ip}/dispense`, {
-                amount: data
+                patient_name: prescription.patient.name,
+                total_volume: sendVolume
             }, {
                 timeout: COMMUNICATION_CONFIG.TIMEOUTS.RETRY
             });
@@ -4519,7 +4938,7 @@ function createManualRow(initMac = null, initTotal = '') {
     // 복원 시 드롭다운 텍스트 세팅
     if (initMac && savedConnections[initMac]) {
         const info = savedConnections[initMac];
-        dropdownBtn.textContent = `${info.nickname} (MAC: ${initMac})`;
+        dropdownBtn.textContent = info.nickname;
     }
 
     dropdownBtn.addEventListener('click', () => {
@@ -4527,10 +4946,10 @@ function createManualRow(initMac = null, initTotal = '') {
         Object.entries(savedConnections).forEach(([mac, info]) => {
             const li = document.createElement('li');
             li.className = 'dropdown-item';
-            li.textContent = `${info.nickname} (MAC: ${mac})`;
+            li.textContent = info.nickname;
             li.onclick = () => {
                 selectedMac = mac;
-                dropdownBtn.textContent = `${info.nickname} (MAC: ${mac})`;
+                dropdownBtn.textContent = info.nickname;
                 updateStatus();
                 saveManualRowsState();
             };
@@ -4621,7 +5040,6 @@ function createManualRow(initMac = null, initTotal = '') {
         const device = connectedDevices[selectedMac];
         const statusId = addManualStatus({ 
             syrupName: info.nickname, 
-            mac: selectedMac, 
             total: total + (isUrgent ? ' (긴급)' : '')
         });
         
@@ -4996,6 +5414,1151 @@ async function diagnoseNetworkEnvironment() {
     } else {
         logMessage('네트워크 환경 진단 실패: 모든 기기 연결 실패');
         return { quality: 'poor', avgResponseTime: 0, suggestedTimeouts: null };
+    }
+}
+
+// ── ESP32 펌웨어 (기본: ESP32-CODE/OTA, 로드셀: ESP32-CODE-LOADCELL/OTA) ─────
+// 기본: /version 에 model 없음 또는 loadcell·hospital 아님 → ESP32-CODE
+// 로드셀: /version 의 model === "loadcell" → ESP32-CODE-LOADCELL
+const ESP_PC_BASIC_VERSION_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/ESP32-CODE/main/OTA/version.txt';
+const ESP_PC_BASIC_FIRMWARE_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/ESP32-CODE/main/OTA/firmware.bin';
+const ESP_PC_LOADCELL_VERSION_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/ESP32-CODE-LOADCELL/main/OTA/version.txt';
+const ESP_PC_LOADCELL_FIRMWARE_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/ESP32-CODE-LOADCELL/main/OTA/firmware.bin';
+
+let espFirmwareModalInstance = null;
+let espLatestBasicCached = '';
+let espLatestLoadcellCached = '';
+
+/** @type {{ mac: string, ip: string, nickname: string, version: string|null, model: string|null, error: string|null, selected: boolean }[]} */
+let espFirmwareRows = [];
+
+function compareSemverPc(a, b) {
+    const pa = String(a)
+        .trim()
+        .split(/[.\s]+/)
+        .map((x) => parseInt(x, 10) || 0);
+    const pb = String(b)
+        .trim()
+        .split(/[.\s]+/)
+        .map((x) => parseInt(x, 10) || 0);
+    const n = Math.max(pa.length, pb.length);
+    for (let i = 0; i < n; i++) {
+        const da = pa[i] || 0;
+        const db = pb[i] || 0;
+        if (da > db) return 1;
+        if (da < db) return -1;
+    }
+    return 0;
+}
+
+function parseEspVersionTxtFirstLine(text) {
+    return String(text)
+        .trim()
+        .split(/\r?\n/)[0]
+        .trim();
+}
+
+/** @returns {'basic'|'loadcell'|'hospital'} */
+function espDeviceKindFromModel(modelRaw) {
+    const s = modelRaw == null ? '' : String(modelRaw).trim().toLowerCase();
+    if (s === 'hospital') return 'hospital';
+    if (s === 'loadcell') return 'loadcell';
+    return 'basic';
+}
+
+function espLatestForKind(kind) {
+    if (kind === 'loadcell') return espLatestLoadcellCached;
+    if (kind === 'basic') return espLatestBasicCached;
+    return '';
+}
+
+function espFirmwareUrlForKind(kind) {
+    if (kind === 'loadcell') return ESP_PC_LOADCELL_FIRMWARE_URL;
+    return ESP_PC_BASIC_FIRMWARE_URL;
+}
+
+function buildEspFirmwareRowsFromConnections() {
+    espFirmwareRows = Object.entries(connectedDevices)
+        .filter(([, d]) => d.status === '연결됨')
+        .map(([mac, d]) => ({
+            mac,
+            ip: d.ip,
+            nickname: d.nickname || (savedConnections[mac] && savedConnections[mac].nickname) || mac,
+            version: null,
+            model: null,
+            error: null,
+            selected: true
+        }));
+}
+
+function deviceNeedsOtaPc(row, latest) {
+    if (!row.version || !latest) return false;
+    return compareSemverPc(latest, row.version) > 0;
+}
+
+function deviceIsUpToDatePc(row, latest) {
+    if (!row.version || !latest) return false;
+    return compareSemverPc(row.version, latest) >= 0;
+}
+
+function renderFirmwareDeviceList() {
+    const c = document.getElementById('firmwareDeviceListContainer');
+    if (!c) return;
+    c.innerHTML = '';
+
+    if (espFirmwareRows.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'text-muted small mb-0';
+        p.textContent = '연결된 시럽조제기가 없습니다. 설정에서 기기를 연결하세요.';
+        c.appendChild(p);
+        return;
+    }
+
+    for (const row of espFirmwareRows) {
+        const kind = espDeviceKindFromModel(row.model);
+        if (kind === 'hospital') {
+            row.selected = false;
+        }
+
+        const latest = espLatestForKind(kind);
+        const latestOk = !!(latest && kind !== 'hospital');
+
+        const card = document.createElement('div');
+        card.className = 'firmware-device-card';
+
+        const left = document.createElement('div');
+        left.className = 'd-flex align-items-start gap-2 flex-grow-1 min-w-0';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input mt-1';
+        cb.checked = !!row.selected;
+        cb.disabled = kind === 'hospital' || !!(row.error && !row.version);
+        cb.addEventListener('change', () => {
+            row.selected = cb.checked;
+        });
+
+        const textWrap = document.createElement('div');
+        textWrap.className = 'flex-grow-1 min-w-0';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'fw-semibold text-truncate';
+        nameEl.textContent = row.nickname;
+        const ipEl = document.createElement('div');
+        ipEl.className = 'small text-secondary';
+        ipEl.textContent = row.ip;
+        const kindEl = document.createElement('div');
+        kindEl.className = 'small text-muted';
+        if (kind === 'loadcell') {
+            kindEl.textContent = '모델: 로드셀 (loadcell)';
+        } else if (kind === 'hospital') {
+            kindEl.textContent = '모델: 병원용 (hospital)';
+        } else {
+            kindEl.textContent = '모델: 기본';
+        }
+        textWrap.appendChild(nameEl);
+        textWrap.appendChild(ipEl);
+        textWrap.appendChild(kindEl);
+
+        left.appendChild(cb);
+        left.appendChild(textWrap);
+
+        const right = document.createElement('div');
+        right.className = 'firmware-device-meta text-end flex-shrink-0';
+
+        const verLine = document.createElement('div');
+        verLine.className = 'small mb-1';
+        if (row.error && !row.version) {
+            verLine.textContent = '현재 버전: 확인 실패';
+        } else if (row.version) {
+            verLine.textContent = `현재 버전: ${row.version}`;
+        } else {
+            verLine.textContent = '현재 버전: —';
+        }
+
+        const badge = document.createElement('span');
+        badge.className = 'badge rounded-pill';
+        if (kind === 'hospital') {
+            badge.classList.add('bg-secondary');
+            badge.textContent = '병원용';
+        } else if (row.error && !row.version) {
+            badge.classList.add('bg-danger');
+            badge.textContent = '오류';
+        } else if (kind === 'loadcell' && !espLatestLoadcellCached) {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '원격 없음';
+        } else if (kind === 'basic' && !espLatestBasicCached) {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '원격 없음';
+        } else if (!latestOk) {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '—';
+        } else if (deviceIsUpToDatePc(row, latest)) {
+            badge.classList.add('firmware-badge-latest');
+            badge.textContent = '최신 버전';
+        } else if (deviceNeedsOtaPc(row, latest)) {
+            badge.classList.add('bg-warning', 'text-dark');
+            badge.textContent = '업데이트 필요';
+        } else {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '—';
+        }
+
+        right.appendChild(verLine);
+        right.appendChild(badge);
+
+        card.appendChild(left);
+        card.appendChild(right);
+        c.appendChild(card);
+    }
+}
+
+async function fetchEspVersionTxt(url) {
+    const res = await axios.get(url, {
+        timeout: 20000,
+        responseType: 'text',
+        transformResponse: [(d) => d]
+    });
+    const v = parseEspVersionTxtFirstLine(res.data);
+    if (!v) throw new Error('version.txt 내용 없음');
+    return v;
+}
+
+/** @returns {{ basicOk: boolean, loadcellOk: boolean, errors: string[] }} */
+async function refreshEspFirmwareLatestBoth() {
+    const basicInp = document.getElementById('espLatestBasicDisplay');
+    const lcInp = document.getElementById('espLatestLoadcellDisplay');
+    const prevBasic = espLatestBasicCached;
+    const prevLoadcell = espLatestLoadcellCached;
+    espLatestBasicCached = '';
+    espLatestLoadcellCached = '';
+    const errors = [];
+
+    const [bRes, lRes] = await Promise.allSettled([
+        fetchEspVersionTxt(ESP_PC_BASIC_VERSION_URL),
+        fetchEspVersionTxt(ESP_PC_LOADCELL_VERSION_URL)
+    ]);
+
+    let basicOk = false;
+    let loadcellOk = false;
+
+    if (bRes.status === 'fulfilled') {
+        espLatestBasicCached = bRes.value;
+        basicOk = true;
+        if (basicInp) basicInp.value = espLatestBasicCached;
+    } else {
+        const msg =
+            bRes.reason && bRes.reason.response
+                ? `기본 HTTP ${bRes.reason.response.status}`
+                : bRes.reason
+                  ? String(bRes.reason.message || bRes.reason)
+                  : '실패';
+        errors.push(`기본(ESP32-CODE/OTA): ${msg}`);
+        espLatestBasicCached = prevBasic;
+        if (basicInp) basicInp.value = prevBasic || '—';
+    }
+
+    if (lRes.status === 'fulfilled') {
+        espLatestLoadcellCached = lRes.value;
+        loadcellOk = true;
+        if (lcInp) lcInp.value = espLatestLoadcellCached;
+    } else {
+        const msg =
+            lRes.reason && lRes.reason.response
+                ? `로드셀 HTTP ${lRes.reason.response.status}`
+                : lRes.reason
+                  ? String(lRes.reason.message || lRes.reason)
+                  : '실패';
+        errors.push(`로드셀(LOADCELL/OTA): ${msg}`);
+        espLatestLoadcellCached = prevLoadcell;
+        if (lcInp) lcInp.value = prevLoadcell || '—';
+    }
+
+    return { basicOk, loadcellOk, errors };
+}
+
+async function refreshEspDeviceVersionsOnly() {
+    for (const row of espFirmwareRows) {
+        try {
+            // OTA 직후 재부팅 중이면 연결 거부가 흔함 — 타임아웃을 짧게 유지
+            const r = await axios.get(`http://${row.ip}/version`, { timeout: 4000 });
+            row.version =
+                r.data && r.data.version != null ? String(r.data.version).trim() : '';
+            row.model =
+                r.data && r.data.model != null ? String(r.data.model).trim() : '';
+            row.error = null;
+        } catch (e) {
+            row.error = e.message || String(e);
+            row.version = null;
+            row.model = null;
+        }
+    }
+}
+
+/** OTA 직후 재부팅 구간에서 /version 실패를 줄이기 위해 재시도 */
+async function refreshEspDeviceVersionsWithRetry(maxAttempts = 5, delayMs = 1200) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await refreshEspDeviceVersionsOnly();
+        const anyMissing = espFirmwareRows.some((r) => r.error && !r.version);
+        if (!anyMissing) {
+            if (attempt > 0) {
+                logMessage(`펌웨어: 기기 버전 확인 성공 (${attempt + 1}회차)`);
+            }
+            return;
+        }
+        if (attempt < maxAttempts - 1) {
+            logMessage(
+                `펌웨어: 기기 응답 대기 중… (${attempt + 1}/${maxAttempts}) 재부팅 후 곧 복구됩니다.`
+            );
+            await new Promise((r) => setTimeout(r, delayMs));
+        }
+    }
+}
+
+/**
+ * @param {{ suppressGithubErrorDialog?: boolean, postOtaDeviceRetry?: boolean }} [options]
+ *   suppressGithubErrorDialog — OTA 직후 등 GitHub가 막혀도 모달 경고를 띄우지 않음(로그만)
+ *   postOtaDeviceRetry — 기기 /version 재시도(재부팅 직후 실패 완화)
+ */
+async function refreshEspFirmwareModalData(options = {}) {
+    const suppressGithubDialog = options.suppressGithubErrorDialog === true;
+    const postOtaRetry = options.postOtaDeviceRetry === true;
+
+    logMessage('펌웨어: GitHub OTA(기본·로드셀) 및 기기 /version 조회…');
+    const { basicOk, loadcellOk, errors } = await refreshEspFirmwareLatestBoth();
+    try {
+        if (postOtaRetry) {
+            await refreshEspDeviceVersionsWithRetry(5, 1200);
+        } else {
+            await refreshEspDeviceVersionsOnly();
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    renderFirmwareDeviceList();
+
+    if (!basicOk && !loadcellOk) {
+        logMessage(`펌웨어: GitHub 전부 실패 — ${errors.join(' / ')}`);
+        if (!suppressGithubDialog) {
+            await showMessage(
+                'warning',
+                `최신 펌웨어(version.txt)를 가져오지 못했습니다.\n${errors.join('\n')}\n\n연결은 확인되며, GitHub·네트워크를 점검하세요.`
+            );
+        } else {
+            logMessage(
+                '펌웨어: GitHub 조회 실패(알림 생략). 모달「새로고침」으로 재시도하거나, 방화벽·DNS에서 raw.githubusercontent.com 접근을 확인하세요.'
+            );
+        }
+    } else if (!basicOk || !loadcellOk) {
+        logMessage(`펌웨어: 일부만 성공 — ${errors.join(' / ')}`);
+        if (!suppressGithubDialog) {
+            await showMessage(
+                'warning',
+                `한쪽 저장소만 조회되었습니다.\n${errors.join('\n')}\n\n해당 모델만 OTA 비교가 가능합니다.`
+            );
+        } else {
+            logMessage('펌웨어: GitHub 일부 실패(알림 생략). 이전에 받아 둔 버전으로 비교합니다.');
+        }
+    } else {
+        logMessage('펌웨어: 조회 완료 (기본·로드셀)');
+    }
+}
+
+function openFirmwareUpdateModal() {
+    const el = document.getElementById('firmwareUpdateModal');
+    if (!el) return;
+    buildEspFirmwareRowsFromConnections();
+    renderFirmwareDeviceList();
+    if (!espFirmwareModalInstance) {
+        espFirmwareModalInstance = new bootstrap.Modal(el);
+    }
+    espFirmwareModalInstance.show();
+    refreshEspFirmwareModalData();
+}
+
+function clampEspOtaPercent(n) {
+    if (typeof n !== 'number' || Number.isNaN(n)) return 0;
+    return Math.max(0, Math.min(100, n));
+}
+
+function showEspOtaProgressPanel(visible) {
+    const panel = document.getElementById('espOtaProgressPanel');
+    const list = document.getElementById('firmwareDeviceListContainer');
+    if (panel) {
+        panel.classList.toggle('d-none', !visible);
+    }
+    if (list) {
+        list.classList.toggle('opacity-50', visible);
+        list.style.pointerEvents = visible ? 'none' : '';
+    }
+}
+
+function espOtaRowDomId(ip) {
+    return `esp-ota-row-${String(ip).replace(/\./g, '-')}`;
+}
+
+function buildEspOtaParallelProgressRows(targets) {
+    const wrap = document.getElementById('espOtaParallelRows');
+    const summary = document.getElementById('espOtaParallelSummary');
+    if (summary) {
+        summary.textContent =
+            targets.length > 0
+                ? `${targets.length}대 동시 진행 — 각 기기 진행률은 아래와 같습니다.`
+                : '—';
+    }
+    if (!wrap) return;
+    wrap.replaceChildren();
+    for (const row of targets) {
+        const root = document.createElement('div');
+        root.className = 'esp-ota-parallel-row mb-3';
+        root.id = espOtaRowDomId(row.ip);
+        root.dataset.ip = row.ip;
+
+        const head = document.createElement('div');
+        head.className = 'd-flex justify-content-between align-items-baseline gap-2 mb-1';
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'fw-semibold small text-truncate';
+        nameEl.textContent = row.nickname || row.ip;
+
+        const ipEl = document.createElement('span');
+        ipEl.className = 'text-muted small flex-shrink-0';
+        ipEl.textContent = row.ip;
+
+        head.appendChild(nameEl);
+        head.appendChild(ipEl);
+
+        const track = document.createElement('div');
+        track.className = 'progress esp-ota-progress-track';
+        track.style.height = '1.05rem';
+
+        const bar = document.createElement('div');
+        bar.className =
+            'progress-bar progress-bar-striped progress-bar-animated esp-ota-row-bar';
+        bar.setAttribute('role', 'progressbar');
+        bar.style.width = '0%';
+        bar.setAttribute('aria-valuenow', '0');
+        bar.setAttribute('aria-valuemin', '0');
+        bar.setAttribute('aria-valuemax', '100');
+        bar.textContent = '0%';
+
+        track.appendChild(bar);
+
+        const det = document.createElement('div');
+        det.className = 'esp-ota-row-detail small text-muted mt-1';
+        det.textContent = '시작 대기…';
+
+        root.appendChild(head);
+        root.appendChild(track);
+        root.appendChild(det);
+        wrap.appendChild(root);
+    }
+}
+
+/**
+ * @param {string} ip
+ * @param {number} percent
+ * @param {string|null|undefined} detail
+ * @param {'pending'|'running'|'ok'|'fail'} phase
+ */
+function updateEspOtaRowProgress(ip, percent, detail, phase) {
+    const root = document.getElementById(espOtaRowDomId(ip));
+    if (!root) return;
+    const bar = root.querySelector('.esp-ota-row-bar');
+    const det = root.querySelector('.esp-ota-row-detail');
+    let p = clampEspOtaPercent(percent);
+    if (phase === 'ok') p = 100;
+    if (bar) {
+        bar.style.width = `${p}%`;
+        bar.textContent = `${Math.round(p)}%`;
+        bar.setAttribute('aria-valuenow', String(Math.round(p)));
+        bar.classList.remove('bg-success', 'bg-danger');
+        if (phase === 'ok' || phase === 'fail') {
+            bar.classList.remove('progress-bar-striped', 'progress-bar-animated');
+        } else {
+            bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+        }
+        if (phase === 'ok') {
+            bar.classList.add('bg-success');
+        } else if (phase === 'fail') {
+            bar.classList.add('bg-danger');
+            bar.style.width = '100%';
+            bar.textContent = '실패';
+            bar.setAttribute('aria-valuenow', '100');
+        }
+    }
+    if (det && detail != null) det.textContent = detail;
+}
+
+function setEspOtaAckVisible(visible) {
+    const ack = document.getElementById('espOtaProgressAckBtn');
+    if (!ack) return;
+    ack.classList.toggle('d-none', !visible);
+    ack.disabled = !visible;
+    document.querySelectorAll('.esp-ota-row-bar').forEach((bar) => {
+        if (visible) bar.classList.remove('progress-bar-animated');
+        else bar.classList.add('progress-bar-animated');
+    });
+}
+
+function setEspFirmwareOtaUiLocked(locked) {
+    const ids = [
+        'espFirmwareProceedBtn',
+        'espFirmwareModalFooterClose',
+        'espFirmwareModalHeaderClose',
+        'espFirmwareModalRefreshBtn'
+    ];
+    for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!locked;
+    }
+}
+
+function waitEspOtaProgressAck() {
+    return new Promise((resolve) => {
+        const btn = document.getElementById('espOtaProgressAckBtn');
+        if (!btn) {
+            resolve();
+            return;
+        }
+        const onClick = () => {
+            btn.removeEventListener('click', onClick);
+            resolve();
+        };
+        btn.addEventListener('click', onClick);
+    });
+}
+
+function espOtaDetailFromStatus(data, st) {
+    if (data && data.message) return String(data.message);
+    if (st === 'downloading') return '펌웨어 수신 중…';
+    if (st === 'installing' || st === 'writing') return '플래시 기록 중…';
+    if (st === 'rebooting') return '재부팅 중…';
+    if (st === 'idle') return '대기';
+    if (st === 'reconnecting') return '기기와 통신 재시도 중…';
+    if (st) return `상태: ${st}`;
+    return '상태 확인 중…';
+}
+
+/**
+ * @param {string} ip
+ * @param {{ maxMs?: number, onProgress?: (p: { partial: number, status: string|null, detail: string, raw: any }) => void }} [options]
+ */
+async function pollEspOtaStatusPc(ip, options = {}) {
+    const maxMs = options.maxMs ?? 600000;
+    const onProgress = options.onProgress;
+    const t0 = Date.now();
+    // ESP32 펌웨어(로드셀/기본)는 성공 시 "installing" 후 재부팅하고, 재부팅 뒤에는 "idle"로만 돌아옴.
+    // "completed"를 보내지 않으면 아래 플래그 없이 폴링이 끝까지 실패 → 배치 OTA가 1대만 하고 중단됨.
+    let sawOtaInProgress = false;
+
+    while (Date.now() - t0 < maxMs) {
+        await new Promise((r) => setTimeout(r, 1200));
+        try {
+            const { data } = await axios.get(`http://${ip}/ota/status`, { timeout: 8000 });
+            const st = data && data.status;
+            let pctFromDevice = null;
+            if (data && typeof data.percent === 'number') {
+                pctFromDevice = clampEspOtaPercent(data.percent);
+            } else if (data && typeof data.progress === 'number') {
+                pctFromDevice = clampEspOtaPercent(data.progress);
+            }
+
+            if (st === 'downloading' || st === 'installing') {
+                sawOtaInProgress = true;
+            } else if (pctFromDevice != null && pctFromDevice > 0) {
+                sawOtaInProgress = true;
+            }
+
+            const elapsed = Date.now() - t0;
+            let partial = pctFromDevice;
+            if (partial == null) {
+                partial = Math.min(94, 10 + (elapsed / maxMs) * 84);
+            }
+
+            const detail = espOtaDetailFromStatus(data, st);
+            if (onProgress) {
+                onProgress({ partial, status: st, detail, raw: data });
+            }
+
+            if (st === 'completed') return { ok: true };
+            // 플래시 기록 완료 직후 재부팅 직전(또는 일부 빌드)
+            if (st === 'installing') return { ok: true };
+            if (st === 'failed') {
+                return { ok: false, message: (data && data.message) || 'failed' };
+            }
+            // 다운로드/설치를 한 번이라도 본 뒤 재부팅되면 status가 idle로 리셋됨 → 성공으로 간주
+            if (sawOtaInProgress && st === 'idle') {
+                return { ok: true };
+            }
+        } catch (_) {
+            const elapsed = Date.now() - t0;
+            const partial = Math.min(94, 10 + (elapsed / maxMs) * 84);
+            if (onProgress) {
+                onProgress({
+                    partial,
+                    status: 'reconnecting',
+                    detail: '기기 응답 대기 중… (재부팅·네트워크 지연 시 시간이 걸릴 수 있습니다)',
+                    raw: null
+                });
+            }
+        }
+    }
+    return { ok: false, message: '상태 확인 시간 초과' };
+}
+
+/**
+ * 한 대 OTA (병렬 배치용). UI는 ip 기준 행만 갱신.
+ * @returns {Promise<{ ok: boolean, nickname: string, message?: string }>}
+ */
+async function runSingleEspParallelOta(row, latest, fwUrl) {
+    const ip = row.ip;
+    const nick = row.nickname || ip;
+    try {
+        updateEspOtaRowProgress(ip, 2, '업데이트 시작 요청 전송 중…', 'running');
+        logMessage(`펌웨어 OTA 시작: ${nick} (${ip}) → v${latest}`);
+
+        await axios.post(
+            `http://${ip}/ota/start`,
+            { firmware_url: fwUrl, version: latest },
+            { timeout: 15000, headers: { 'Content-Type': 'application/json' } }
+        );
+
+        updateEspOtaRowProgress(ip, 8, '기기에서 펌웨어를 받는 중…', 'running');
+
+        const poll = await pollEspOtaStatusPc(ip, {
+            maxMs: 600000,
+            onProgress: ({ partial, detail }) => {
+                updateEspOtaRowProgress(ip, partial, detail, 'running');
+            }
+        });
+
+        if (!poll.ok) {
+            updateEspOtaRowProgress(
+                ip,
+                100,
+                `${poll.message || '결과 불확실'}. 새로고침 후 버전을 확인해 주세요.`,
+                'fail'
+            );
+            logMessage(`펌웨어 OTA 실패(확인 필요): ${nick} — ${poll.message}`);
+            return { ok: false, nickname: nick, message: poll.message };
+        }
+
+        updateEspOtaRowProgress(ip, 100, 'OTA 완료', 'ok');
+        logMessage(`펌웨어 OTA 완료: ${nick}`);
+        return { ok: true, nickname: nick };
+    } catch (e) {
+        const detail = e.response ? `HTTP ${e.response.status}` : e.message;
+        updateEspOtaRowProgress(ip, 100, `오류: ${detail}`, 'fail');
+        logMessage(`펌웨어 OTA 오류: ${nick} — ${detail}`);
+        return { ok: false, nickname: nick, message: detail };
+    }
+}
+
+async function proceedEspFirmwareBatchUpdate() {
+    if (!espLatestBasicCached && !espLatestLoadcellCached) {
+        await showMessage('warning', '최신 펌웨어를 먼저 불러오세요.「새로고침」을 눌러 주세요.');
+        return;
+    }
+
+    const targets = espFirmwareRows.filter((row) => {
+        if (!row.selected) return false;
+        const kind = espDeviceKindFromModel(row.model);
+        if (kind === 'hospital') return false;
+        const latest = espLatestForKind(kind);
+        if (!latest || !row.version) return false;
+        return deviceNeedsOtaPc(row, latest);
+    });
+
+    if (targets.length === 0) {
+        await showMessage(
+            'info',
+            'OTA로 내릴 기기가 없습니다. (이미 최신이거나, 병원용·오류·원격버전 없음은 제외됩니다.)'
+        );
+        return;
+    }
+
+    const summary = targets
+        .map((row) => {
+            const k = espDeviceKindFromModel(row.model);
+            const lv = espLatestForKind(k);
+            return `• ${row.nickname}: ${k === 'loadcell' ? '로드셀' : '기본'} → v${lv}`;
+        })
+        .join('\n');
+
+    if (
+        !confirm(
+            `선택한 ${targets.length}대에 동시에 OTA를 진행합니다.\n\n${summary}\n\n전원을 끄지 마세요. 계속할까요?`
+        )
+    ) {
+        return;
+    }
+
+    const btn = document.getElementById('espFirmwareProceedBtn');
+    const n = targets.length;
+
+    setEspFirmwareOtaUiLocked(true);
+    if (btn) btn.disabled = true;
+    showEspOtaProgressPanel(true);
+    setEspOtaAckVisible(false);
+    buildEspOtaParallelProgressRows(targets);
+
+    try {
+        const jobs = targets.map((row) => {
+            const kind = espDeviceKindFromModel(row.model);
+            const latest = espLatestForKind(kind);
+            const fwUrl = espFirmwareUrlForKind(kind);
+            return runSingleEspParallelOta(row, latest, fwUrl);
+        });
+
+        const results = await Promise.all(jobs);
+        const failed = results.filter((r) => !r.ok);
+        const batchFailed = failed.length > 0;
+
+        const summaryEl = document.getElementById('espOtaParallelSummary');
+        if (summaryEl) {
+            if (!batchFailed) {
+                summaryEl.textContent = `전체 완료: 성공 ${n}/${n}. 확인을 누르면 닫히고 목록을 갱신합니다.`;
+            } else {
+                const names = failed.map((f) => f.nickname).join(', ');
+                summaryEl.textContent = `전체 완료: 성공 ${n - failed.length}/${n}, 실패 ${failed.length}대 (${names}). 확인을 누르면 닫히고 목록을 갱신합니다.`;
+            }
+        }
+
+        setEspOtaAckVisible(true);
+        await waitEspOtaProgressAck();
+
+        // 확인 직후 패널/잠금을 먼저 풀어 UI가 멈추지 않게 한 뒤, 목록 갱신은 백그라운드
+        showEspOtaProgressPanel(false);
+        setEspOtaAckVisible(false);
+        const wrap = document.getElementById('espOtaParallelRows');
+        if (wrap) wrap.replaceChildren();
+        setEspFirmwareOtaUiLocked(false);
+        if (btn) btn.disabled = false;
+
+        logMessage('펌웨어: 목록 갱신 중… (백그라운드)');
+        refreshEspFirmwareModalData({
+            suppressGithubErrorDialog: true,
+            postOtaDeviceRetry: true
+        }).catch((e) => {
+            logMessage(`펌웨어: 목록 갱신 실패 — ${e && e.message ? e.message : e}`);
+        });
+    } catch (e) {
+        logMessage(`펌웨어 OTA 오류: ${e && e.message ? e.message : e}`);
+        await showMessage('error', `OTA 중 오류: ${e && e.message ? e.message : e}`);
+    } finally {
+        showEspOtaProgressPanel(false);
+        setEspOtaAckVisible(false);
+        const wrap = document.getElementById('espOtaParallelRows');
+        if (wrap) wrap.replaceChildren();
+        setEspFirmwareOtaUiLocked(false);
+        if (btn) btn.disabled = false;
+    }
+}
+
+// ── HMI LCD (GitHub HMI-DESIGN/OTA) ───────────────────────────────────────────
+const HMI_PC_VERSION_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/HMI-DESIGN/main/OTA/version.txt';
+const HMI_PC_TFT_URL =
+    'https://raw.githubusercontent.com/pharmcoder-kr/HMI-DESIGN/main/OTA/display.tft';
+
+let hmiLcdModalInstance = null;
+let hmiLatestCached = '';
+/** @type {{ mac: string, ip: string, nickname: string, hmiVersion: string|null, error: string|null, selected: boolean }[]} */
+let hmiLcdRows = [];
+
+function buildHmiLcdRowsFromConnections() {
+    hmiLcdRows = Object.entries(connectedDevices)
+        .filter(([, d]) => d.status === '연결됨')
+        .map(([mac, d]) => ({
+            mac,
+            ip: d.ip,
+            nickname: d.nickname || (savedConnections[mac] && savedConnections[mac].nickname) || mac,
+            hmiVersion: null,
+            error: null,
+            selected: true
+        }));
+}
+
+function renderHmiDeviceList() {
+    const c = document.getElementById('hmiDeviceListContainer');
+    if (!c) return;
+    c.innerHTML = '';
+
+    if (hmiLcdRows.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'text-muted small mb-0';
+        p.textContent = '연결된 시럽조제기가 없습니다. 설정에서 기기를 연결하세요.';
+        c.appendChild(p);
+        return;
+    }
+
+    for (const row of hmiLcdRows) {
+        const card = document.createElement('div');
+        card.className = 'firmware-device-card';
+
+        const left = document.createElement('div');
+        left.className = 'd-flex align-items-start gap-2 flex-grow-1 min-w-0';
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input mt-1';
+        cb.checked = !!row.selected;
+        cb.disabled = !!(row.error && !row.hmiVersion);
+        cb.addEventListener('change', () => {
+            row.selected = cb.checked;
+        });
+
+        const textWrap = document.createElement('div');
+        textWrap.className = 'flex-grow-1 min-w-0';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'fw-semibold text-truncate';
+        nameEl.textContent = row.nickname;
+        const ipEl = document.createElement('div');
+        ipEl.className = 'small text-secondary';
+        ipEl.textContent = row.ip;
+        textWrap.appendChild(nameEl);
+        textWrap.appendChild(ipEl);
+
+        left.appendChild(cb);
+        left.appendChild(textWrap);
+
+        const right = document.createElement('div');
+        right.className = 'firmware-device-meta text-end flex-shrink-0';
+
+        const verLine = document.createElement('div');
+        verLine.className = 'small mb-1';
+        if (row.error && !row.hmiVersion) {
+            verLine.textContent = 'HMI 버전: 확인 실패';
+        } else if (row.hmiVersion) {
+            verLine.textContent = `HMI 버전: ${row.hmiVersion}`;
+        } else {
+            verLine.textContent = 'HMI 버전: —';
+        }
+
+        const badge = document.createElement('span');
+        badge.className = 'badge rounded-pill';
+        if (row.error && !row.hmiVersion) {
+            badge.classList.add('bg-danger');
+            badge.textContent = '오류';
+        } else if (!hmiLatestCached) {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '원격 없음';
+        } else if (!row.hmiVersion) {
+            badge.classList.add('bg-secondary');
+            badge.textContent = '미지원';
+        } else if (compareSemverPc(row.hmiVersion, hmiLatestCached) >= 0) {
+            badge.classList.add('firmware-badge-latest');
+            badge.textContent = '최신 버전';
+        } else if (compareSemverPc(hmiLatestCached, row.hmiVersion) > 0) {
+            badge.classList.add('bg-warning', 'text-dark');
+            badge.textContent = '업데이트 필요';
+        } else {
+            badge.classList.add('bg-light', 'text-dark');
+            badge.textContent = '—';
+        }
+
+        right.appendChild(verLine);
+        right.appendChild(badge);
+        card.appendChild(left);
+        card.appendChild(right);
+        c.appendChild(card);
+    }
+}
+
+async function refreshHmiLatestVersion() {
+    const inp = document.getElementById('hmiLatestDisplay');
+    const prev = hmiLatestCached;
+    try {
+        const v = await fetchEspVersionTxt(HMI_PC_VERSION_URL);
+        hmiLatestCached = v;
+        if (inp) inp.value = v;
+        return true;
+    } catch (e) {
+        hmiLatestCached = prev;
+        if (inp) inp.value = prev || '—';
+        throw e;
+    }
+}
+
+async function refreshHmiDeviceVersionsOnly() {
+    for (const row of hmiLcdRows) {
+        try {
+            const r = await axios.get(`http://${row.ip}/version`, { timeout: 4000 });
+            row.hmiVersion =
+                r.data && r.data.hmi_version != null ? String(r.data.hmi_version).trim() : '';
+            row.error = row.hmiVersion ? null : 'hmi_version 없음 (ESP32 펌웨어 확인)';
+            if (!row.hmiVersion) row.selected = false;
+        } catch (e) {
+            row.error = e.message || String(e);
+            row.hmiVersion = null;
+            row.selected = false;
+        }
+    }
+}
+
+async function refreshHmiLcdModalData(options = {}) {
+    const suppress = !!options.suppressGithubErrorDialog;
+    buildHmiLcdRowsFromConnections();
+    renderHmiDeviceList();
+
+    try {
+        logMessage('HMI LCD: GitHub version.txt 및 기기 /version 조회…');
+        await refreshHmiLatestVersion();
+        await refreshHmiDeviceVersionsOnly();
+        renderHmiDeviceList();
+        logMessage(`HMI LCD: 조회 완료 (최신=${hmiLatestCached || '—'})`);
+    } catch (e) {
+        const msg = e.message || String(e);
+        logMessage(`HMI LCD: GitHub 조회 실패 — ${msg}`);
+        if (!suppress) {
+            await showMessage(
+                'error',
+                `GitHub HMI 버전 확인 실패: ${msg}\n\nraw.githubusercontent.com 접근·방화벽을 확인하세요.`
+            );
+        }
+        await refreshHmiDeviceVersionsOnly();
+        renderHmiDeviceList();
+    }
+}
+
+async function openHmiLcdUpdateModal() {
+    const el = document.getElementById('hmiLcdUpdateModal');
+    if (!el) return;
+    if (!hmiLcdModalInstance) {
+        hmiLcdModalInstance = bootstrap.Modal.getOrCreateInstance(el);
+    }
+    showHmiOtaProgressPanel(false);
+    hmiLcdModalInstance.show();
+    await refreshHmiLcdModalData();
+}
+
+function showHmiOtaProgressPanel(visible) {
+    const panel = document.getElementById('hmiOtaProgressPanel');
+    if (panel) panel.classList.toggle('d-none', !visible);
+}
+
+function setHmiOtaAckVisible(visible) {
+    const ack = document.getElementById('hmiOtaProgressAckBtn');
+    if (!ack) return;
+    ack.classList.toggle('d-none', !visible);
+    ack.disabled = !visible;
+}
+
+function setHmiLcdOtaUiLocked(locked) {
+    for (const id of ['hmiLcdProceedBtn', 'hmiLcdModalFooterClose', 'hmiLcdModalHeaderClose', 'hmiLcdModalRefreshBtn']) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!locked;
+    }
+}
+
+function waitHmiOtaProgressAck() {
+    return new Promise((resolve) => {
+        const btn = document.getElementById('hmiOtaProgressAckBtn');
+        if (!btn) {
+            resolve();
+            return;
+        }
+        const onClick = () => {
+            btn.removeEventListener('click', onClick);
+            resolve();
+        };
+        btn.addEventListener('click', onClick);
+    });
+}
+
+function buildHmiOtaParallelProgressRows(targets) {
+    const wrap = document.getElementById('hmiOtaParallelRows');
+    if (!wrap) return;
+    wrap.replaceChildren();
+    for (const row of targets) {
+        const div = document.createElement('div');
+        div.className = 'esp-ota-parallel-row mb-2';
+        div.dataset.ip = row.ip;
+        div.innerHTML = `
+            <div class="d-flex justify-content-between small mb-1">
+                <span class="fw-semibold text-truncate">${row.nickname}</span>
+                <span class="esp-ota-row-pct text-muted">0%</span>
+            </div>
+            <div class="progress esp-ota-progress-track" style="height: 8px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated esp-ota-row-bar" style="width: 0%"></div>
+            </div>
+            <div class="esp-ota-row-detail small text-muted mt-1">대기…</div>
+        `;
+        wrap.appendChild(div);
+    }
+}
+
+function updateHmiOtaRowProgress(ip, percent, detail, state) {
+    const row = document.querySelector(`#hmiOtaParallelRows .esp-ota-parallel-row[data-ip="${ip}"]`);
+    if (!row) return;
+    const pct = Math.max(0, Math.min(100, Math.round(percent)));
+    const bar = row.querySelector('.esp-ota-row-bar');
+    const pctEl = row.querySelector('.esp-ota-row-pct');
+    const detailEl = row.querySelector('.esp-ota-row-detail');
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    if (bar) {
+        bar.style.width = `${pct}%`;
+        bar.classList.remove('bg-success', 'bg-danger');
+        if (state === 'ok') bar.classList.add('bg-success');
+        if (state === 'fail') bar.classList.add('bg-danger');
+    }
+    if (detailEl) detailEl.textContent = detail || '';
+}
+
+async function pollHmiOtaStatusPc(ip, options = {}) {
+    const maxMs = options.maxMs ?? 40 * 60 * 1000;
+    const onProgress = options.onProgress;
+    const t0 = Date.now();
+
+    while (Date.now() - t0 < maxMs) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+            const { data } = await axios.get(`http://${ip}/hmi-ota/status`, { timeout: 8000 });
+            const st = data && data.status;
+            let pct = typeof data.progress === 'number' ? data.progress : null;
+            if (pct == null) pct = Math.min(94, 5 + ((Date.now() - t0) / maxMs) * 90);
+            const detail = (data && data.message) || st || '상태 확인 중…';
+            if (onProgress) onProgress({ partial: pct, status: st, detail, raw: data });
+
+            if (st === 'completed') return { ok: true, hmi_version: data.hmi_version };
+            if (st === 'failed') {
+                return { ok: false, message: (data && data.message) || 'failed' };
+            }
+        } catch (_) {
+            if (onProgress) {
+                onProgress({
+                    partial: Math.min(94, 5 + ((Date.now() - t0) / maxMs) * 90),
+                    status: 'reconnecting',
+                    detail: '기기 응답 대기 중…',
+                    raw: null
+                });
+            }
+        }
+    }
+    return { ok: false, message: '상태 확인 시간 초과' };
+}
+
+async function runSingleHmiLcdOta(row, latest) {
+    const ip = row.ip;
+    const nick = row.nickname || ip;
+    try {
+        updateHmiOtaRowProgress(ip, 2, 'PC에서 TFT 다운로드 중…', 'running');
+        const proxy = await ipcRenderer.invoke('hmi-ota:prepare-local-tft', {
+            tftUrl: HMI_PC_TFT_URL,
+            deviceIp: ip
+        });
+        logMessage(`HMI TFT LAN 중계: ${proxy.localUrl} (${proxy.size} bytes)`);
+
+        updateHmiOtaRowProgress(ip, 5, 'ESP32에 LCD OTA 시작 요청…', 'running');
+        await axios.post(
+            `http://${ip}/hmi-ota/start`,
+            { tft_url: proxy.localUrl, version: latest },
+            { timeout: 15000, headers: { 'Content-Type': 'application/json' } }
+        );
+
+        const poll = await pollHmiOtaStatusPc(ip, {
+            onProgress: ({ partial, detail }) => {
+                updateHmiOtaRowProgress(ip, partial, detail, 'running');
+            }
+        });
+
+        if (!poll.ok) {
+            updateHmiOtaRowProgress(ip, 100, poll.message || '실패', 'fail');
+            return { ok: false, nickname: nick, message: poll.message };
+        }
+        updateHmiOtaRowProgress(ip, 100, 'LCD OTA 완료', 'ok');
+        return { ok: true, nickname: nick };
+    } catch (e) {
+        const detail = e.response ? `HTTP ${e.response.status}` : e.message;
+        updateHmiOtaRowProgress(ip, 100, `오류: ${detail}`, 'fail');
+        return { ok: false, nickname: nick, message: detail };
+    } finally {
+        try {
+            await ipcRenderer.invoke('hmi-ota:stop-local-tft');
+        } catch (_) {
+            /* ignore */
+        }
+    }
+}
+
+async function proceedHmiLcdBatchUpdate() {
+    if (!hmiLatestCached) {
+        await showMessage('warning', '최신 HMI 버전을 먼저 불러오세요.「새로고침」을 눌러 주세요.');
+        return;
+    }
+
+    const targets = hmiLcdRows.filter(
+        (row) =>
+            row.selected &&
+            row.hmiVersion &&
+            compareSemverPc(hmiLatestCached, row.hmiVersion) > 0
+    );
+
+    if (targets.length === 0) {
+        await showMessage('info', 'LCD OTA로 내릴 기기가 없습니다. (이미 최신이거나 HMI 버전 미지원)');
+        return;
+    }
+
+    const summary = targets
+        .map((r) => `• ${r.nickname}: ${r.hmiVersion} → ${hmiLatestCached}`)
+        .join('\n');
+    if (
+        !confirm(
+            `선택한 ${targets.length}대의 HMI LCD를 업데이트합니다.\n\n${summary}\n\nLCD에 System Data ERROR가 있으면 먼저 SD로 복구하세요.\n전원을 끄지 마세요. 계속할까요?`
+        )
+    ) {
+        return;
+    }
+
+    const btn = document.getElementById('hmiLcdProceedBtn');
+    setHmiLcdOtaUiLocked(true);
+    if (btn) btn.disabled = true;
+    showHmiOtaProgressPanel(true);
+    setHmiOtaAckVisible(false);
+    buildHmiOtaParallelProgressRows(targets);
+
+    try {
+        // LCD OTA는 UART 점유라 순차 처리 (동시 금지)
+        const results = [];
+        for (const row of targets) {
+            results.push(await runSingleHmiLcdOta(row, hmiLatestCached));
+        }
+        const failed = results.filter((r) => !r.ok);
+        const summaryEl = document.getElementById('hmiOtaParallelSummary');
+        if (summaryEl) {
+            summaryEl.textContent = failed.length
+                ? `완료: 성공 ${results.length - failed.length}/${results.length}, 실패 ${failed.length}대. 확인을 누르면 닫히고 목록을 갱신합니다.`
+                : `전체 완료: 성공 ${results.length}/${results.length}. 확인을 누르면 닫히고 목록을 갱신합니다.`;
+        }
+        setHmiOtaAckVisible(true);
+        await waitHmiOtaProgressAck();
+
+        // 확인 직후 패널/잠금을 먼저 해제하고, 목록 갱신은 백그라운드
+        showHmiOtaProgressPanel(false);
+        setHmiOtaAckVisible(false);
+        const wrap = document.getElementById('hmiOtaParallelRows');
+        if (wrap) wrap.replaceChildren();
+        setHmiLcdOtaUiLocked(false);
+        if (btn) btn.disabled = false;
+
+        logMessage('HMI: 목록 갱신 중… (백그라운드)');
+        refreshHmiLcdModalData({ suppressGithubErrorDialog: true }).catch((e) => {
+            logMessage(`HMI: 목록 갱신 실패 — ${e && e.message ? e.message : e}`);
+        });
+    } catch (e) {
+        logMessage(`HMI OTA 오류: ${e && e.message ? e.message : e}`);
+        await showMessage('error', `HMI OTA 중 오류: ${e && e.message ? e.message : e}`);
+    } finally {
+        showHmiOtaProgressPanel(false);
+        setHmiOtaAckVisible(false);
+        const wrap = document.getElementById('hmiOtaParallelRows');
+        if (wrap) wrap.replaceChildren();
+        setHmiLcdOtaUiLocked(false);
+        if (btn) btn.disabled = false;
     }
 }
 

@@ -1,12 +1,13 @@
-const axios = require('axios');
+﻿const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.25';
+const VERSION = '1.3.44';
 const TAG = `v${VERSION}`;
+const RELEASE_TITLE = `v${VERSION} - 문제사항 보내기`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -15,20 +16,19 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## 주요 변경사항
+  const releaseNotes = `## v${VERSION}: 문제사항 보내기
 
-### ⚡ 백그라운드 동작 지원 및 사용자 경험 개선
-- **백그라운드 조제 지원**: 창이 최소화되어도 조제 전송이 정상 작동
-- **불필요한 팝업 제거**: 등록되지 않은 약물 또는 최대량 초과 약물만 선택된 경우 팝업 표시 안 함
+### 주요 변경사항
+- **문제사항 보내기**: 연결된 시럽조제기 목록에서 ESP32 로그를 서버로 전송
+- 관리자 페이지에서 접수된 디바이스 로그를 확인할 수 있습니다
 
-### 🔧 수정 내용
-- \`requestAnimationFrame\` → \`setTimeout\` 변경으로 백그라운드에서도 조제 시작 가능
-- 등록되지 않은 약물 또는 최대량 초과 약물만 선택된 경우 팝업 대신 로그만 기록
-- 창이 최소화되어도 파일 감시 및 조제 전송 정상 작동
+### 사용 방법
+1. 설정 화면의 연결 기기 테이블 우측 **문제사항 보내기** 버튼을 누릅니다
+2. 기기의 \`/logs\` 기록이 서버로 전송됩니다
+3. 관리자 페이지의 디바이스 로그에서 약국명·기기·펌웨어와 함께 확인할 수 있습니다
 
-### 🐛 해결된 문제
-- 창을 최소화하면 조제 전송이 멈추던 문제 해결
-- 등록되지 않은 약물/최대량 초과 약물만 선택 시 불필요한 팝업 표시 문제 해결
+### 해결된 문제
+- 원격 현장에서 유선 시리얼 없이 조제기 상태를 파악하기 어려웠던 문제
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -45,31 +45,59 @@ async function createRelease() {
     console.log(`Tag: ${TAG}`);
     console.log('');
 
-    // 1. Draft Release 생성
-    console.log('1️⃣  Draft Release 생성 중...');
-    const releaseResponse = await axios.post(
+    const apiHeaders = {
+      'Authorization': `token ${GITHUB_TOKEN}`,
+      'Accept': 'application/vnd.github.v3+json'
+    };
+
+    // 1. 기존 릴리즈 확인 또는 생성
+    console.log('1️⃣  기존 Release 확인 중...');
+    let releaseResponse;
+    let releaseId;
+    let uploadUrl;
+
+    const existingReleases = await axios.get(
       `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
-      {
-        tag_name: TAG,
-        name: `v${VERSION} - 백그라운드 동작 지원 및 사용자 경험 개선`,
-        body: releaseNotes,
-        draft: true,
-        prerelease: false
-      },
-      {
-        headers: {
-          'Authorization': `token ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github.v3+json'
-        }
-      }
+      { headers: apiHeaders }
     );
 
-    const releaseId = releaseResponse.data.id;
-    const uploadUrl = releaseResponse.data.upload_url.replace('{?name,label}', '');
-    console.log(`✅ Draft Release 생성 완료 (ID: ${releaseId})`);
+    const existing = existingReleases.data.find(release => release.tag_name === TAG);
+
+    if (existing) {
+      console.log(`✅ 기존 Release 발견 (ID: ${existing.id})`);
+      releaseId = existing.id;
+      uploadUrl = existing.upload_url.replace('{?name,label}', '');
+
+      releaseResponse = await axios.patch(
+        `https://api.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}`,
+        {
+          name: RELEASE_TITLE,
+          body: releaseNotes,
+          draft: false
+        },
+        { headers: apiHeaders }
+      );
+      console.log('✅ Release 내용 업데이트 완료');
+    } else {
+      console.log('📦 새 Release 생성 중...');
+      releaseResponse = await axios.post(
+        `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
+        {
+          tag_name: TAG,
+          name: RELEASE_TITLE,
+          body: releaseNotes,
+          draft: false,
+          prerelease: false
+        },
+        { headers: apiHeaders }
+      );
+      releaseId = releaseResponse.data.id;
+      uploadUrl = releaseResponse.data.upload_url.replace('{?name,label}', '');
+      console.log(`✅ Release 생성 완료 (ID: ${releaseId})`);
+    }
+
     console.log('');
 
-    // 2. 파일 업로드
     const filesToUpload = [
       {
         path: `release/auto-syrup-setup-${VERSION}.exe`,
@@ -88,7 +116,32 @@ async function createRelease() {
       }
     ];
 
-    console.log('2️⃣  파일 업로드 중...');
+    // 2. 같은 이름의 기존 에셋 삭제
+    console.log('2️⃣  기존 에셋 확인 중...');
+    try {
+      const assetsResponse = await axios.get(
+        `https://api.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}/assets`,
+        { headers: apiHeaders }
+      );
+
+      for (const asset of assetsResponse.data) {
+        const shouldDelete = filesToUpload.some(file => file.name === asset.name);
+        if (shouldDelete) {
+          console.log(`   삭제 중: ${asset.name}`);
+          await axios.delete(
+            `https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${asset.id}`,
+            { headers: apiHeaders }
+          );
+          console.log(`   ✅ 삭제 완료: ${asset.name}`);
+        }
+      }
+    } catch (error) {
+      console.log('   기존 에셋 확인 중 오류 (무시하고 계속):', error.message);
+    }
+    console.log('');
+
+    // 3. 파일 업로드
+    console.log('3️⃣  파일 업로드 중...');
     for (const file of filesToUpload) {
       if (!fs.existsSync(file.path)) {
         console.log(`⚠️  파일 없음: ${file.path}`);
@@ -101,21 +154,29 @@ async function createRelease() {
 
       console.log(`   업로드: ${file.name} (${fileSizeMB} MB)`);
 
-      await axios.post(
-        `${uploadUrl}?name=${encodeURIComponent(file.name)}`,
-        fileData,
-        {
-          headers: {
-            'Authorization': `token ${GITHUB_TOKEN}`,
-            'Content-Type': file.contentType,
-            'Content-Length': fileSize
-          },
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity
-        }
-      );
+      try {
+        await axios.post(
+          `${uploadUrl}?name=${encodeURIComponent(file.name)}`,
+          fileData,
+          {
+            headers: {
+              'Authorization': `token ${GITHUB_TOKEN}`,
+              'Content-Type': file.contentType,
+              'Content-Length': fileSize
+            },
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+          }
+        );
 
-      console.log(`   ✅ 업로드 완료: ${file.name}`);
+        console.log(`   ✅ 업로드 완료: ${file.name}`);
+      } catch (error) {
+        console.log(`   ❌ 업로드 실패: ${file.name} - ${error.message}`);
+        if (error.response) {
+          console.log(`      상태 코드: ${error.response.status}`);
+          console.log(`      응답: ${JSON.stringify(error.response.data)}`);
+        }
+      }
     }
 
     console.log('');
@@ -125,10 +186,6 @@ async function createRelease() {
     console.log('');
     console.log('🔗 Release URL:');
     console.log(`   ${releaseResponse.data.html_url}`);
-    console.log('');
-    console.log('💡 다음 단계:');
-    console.log('   1. 위 URL로 이동하여 Release 내용 확인');
-    console.log('   2. "Publish release" 버튼 클릭하여 공개');
     console.log('');
 
   } catch (error) {
@@ -143,4 +200,3 @@ async function createRelease() {
 }
 
 createRelease();
-

@@ -1,21 +1,25 @@
 {
   "name": "auto-syrup",
-  "version": "1.3.26",
+  "version": "1.3.44",
   "description": "오토시럽 - 자동 시럽조제기 연결 관리자",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "electron-forge start",
     "dev": "electron . --dev",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
     "build": "electron-builder",
     "dist": "electron-builder --publish=never",
-    "build-installer": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false",
+    "build-installer": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false ",
     "build-portable": "electron-builder --win --x64 --config.compression=maximum --config.win.target=portable",
-    "build-nsis": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.signAndEditExecutable=false --config.win.target=nsis",
+    "build-nsis": "electron-builder --win --x64 --config.compression=maximum --config.forceCodeSigning=false --config.win.target=nsis",
     "build-all": "npm run build && npm run build-nsis",
     "release": "node create-release.js",
     "reset": "node reset-local-data.js",
     "check-token": "node check-token-simple.js",
-    "find-token": "node find-token.js"
+    "find-token": "node find-token.js",
+    "set-icon": "node set-exe-icon.js"
   },
   "keywords": [
     "arduino",
@@ -26,8 +30,15 @@
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
+    "@electron-forge/cli": "^7.10.2",
+    "@electron-forge/maker-squirrel": "^7.10.2",
+    "@electron-forge/maker-wix": "^7.10.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.10.2",
+    "@electron-forge/plugin-fuses": "^7.10.2",
+    "@electron/fuses": "^1.8.0",
     "electron": "^28.0.0",
     "electron-builder": "^24.13.3",
+    "electron-forge-maker-nsis": "^26.0.12",
     "electron-packager": "^17.1.2"
   },
   "dependencies": {
@@ -43,7 +54,8 @@
     "appId": "kr.pharmcoder.prescription",
     "productName": "오토시럽",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "publish": {
       "provider": "github",
@@ -54,10 +66,15 @@
       {
         "from": "assets",
         "to": "assets",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
       }
     ],
-    "icon": "assets/icon.ico",
     "files": [
       "main.js",
       "renderer.js",
@@ -70,13 +87,11 @@
       "styles.css",
       "gui-editor.js",
       "layout-editor.js",
-      "package.json",
       "connections.json",
       "auto_dispensing_settings.json",
       "medicine_transmission_status.json",
       "transmission_status.json",
       "prescription_path.txt",
-      "assets/**",
       "node_modules/axios/**/*",
       "node_modules/electron-updater/**/*",
       "node_modules/iconv-lite/**/*",
@@ -101,11 +116,13 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "signAndEditExecutable": true,
-      "icon": "assets/icon.ico",
+      "icon": "build/icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "artifactName": "auto-syrup-setup-${version}.${ext}",
       "publisherName": "PharmCoder",
@@ -113,16 +130,16 @@
       "executableName": "오토시럽"
     },
     "nsis": {
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "differentialPackage": false,
-      "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "shortcutName": "오토시럽",
-      "include": "build/installer.nsh",
       "runAfterFinish": false,
+      "include": "build/installer.nsh",
       "menuCategory": false
     },
     "forceCodeSigning": false,

@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeImage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const http = require('http');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 
@@ -16,13 +17,18 @@ try {
 
 const APP_ID = 'kr.pharmcoder.prescription'; // package.json build.appId와 반드시 동일
 
+// 개발 모드에서는 APP_ID에 대응하는 설치 바로가기가 없어 Windows가 창 아이콘 대신
+// electron.exe 기본 아이콘을 작업표시줄에 표시한다. execPath를 AppID로 쓰면 창 아이콘이 적용된다.
+const TASKBAR_APP_ID = app.isPackaged ? APP_ID : process.execPath;
+
 // ⚠️ Windows 작업표시줄 아이콘/토스트/점프리스트 일관성을 위해 AppID를 가장 먼저 지정
-app.setAppUserModelId(APP_ID);
+app.setAppUserModelId(TASKBAR_APP_ID);
 
 let mainWindow;
 let enrollWindow;
 let loginWindow;
 let registerWindow;
+let shutdownWindow;
 const isDev = !app.isPackaged;
 
 // ============================================
@@ -623,9 +629,7 @@ function createLoginWindow() {
 
   // Windows 작업표시줄 아이콘 강제 설정
   loginWindow.once('ready-to-show', () => {
-    if (process.platform === 'win32') {
-      loginWindow.setIcon(getIconPath());
-    }
+    applyWindowIcon(loginWindow);
   });
 
   // 로그인 성공 이벤트 리스너
@@ -672,9 +676,7 @@ function createRegisterWindow() {
 
   // Windows 작업표시줄 아이콘 강제 설정
   registerWindow.once('ready-to-show', () => {
-    if (process.platform === 'win32') {
-      registerWindow.setIcon(getIconPath());
-    }
+    applyWindowIcon(registerWindow);
   });
 
   registerWindow.on('closed', () => {
@@ -708,9 +710,7 @@ function createEnrollWindow() {
 
   // Windows 작업표시줄 아이콘 강제 설정
   enrollWindow.once('ready-to-show', () => {
-    if (process.platform === 'win32') {
-      enrollWindow.setIcon(getIconPath());
-    }
+    applyWindowIcon(enrollWindow);
   });
 
   enrollWindow.on('closed', () => {
@@ -718,25 +718,56 @@ function createEnrollWindow() {
   });
 }
 
-// 아이콘 절대경로 도우미
+// 아이콘 절대경로 도우미 (약국용 assets/build 우선 — 병원용 경로를 섞지 않음)
 function getIconPath() {
-  if (isDev) {
-    // 개발 모드: 현재 디렉토리의 assets 폴더 사용
-    return path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
-  } else {
-    // 프로덕션 모드: extraResources로 복사된 assets 폴더 사용
-    // process.resourcesPath는 extraResources가 복사되는 경로
-    const iconPath = path.join(process.resourcesPath, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
-    
-    // 파일이 없으면 app.getAppPath()에서도 시도
-    if (!fs.existsSync(iconPath)) {
-      const altPath = path.join(app.getAppPath(), 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
-      if (fs.existsSync(altPath)) {
-        return altPath;
-      }
+  const iconFileName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+
+  const candidates = [
+    // 개발: 프로젝트 자체 아이콘
+    path.join(__dirname, 'assets', iconFileName),
+    path.join(__dirname, 'build', iconFileName),
+    path.join(__dirname, 'assets', 'icon.png'),
+    path.join(__dirname, 'build', 'icon.png'),
+    // 패키징: resources
+    path.join(process.resourcesPath || '', 'assets', iconFileName),
+    path.join(process.resourcesPath || '', 'icon.ico'),
+    path.join(process.resourcesPath || '', 'assets', 'icon.png')
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
     }
-    
-    return iconPath;
+  }
+
+  // 후보가 모두 없으면 개발용 기본 경로 (원인 파악용)
+  return path.join(__dirname, 'assets', iconFileName);
+}
+
+// BrowserWindow / setIcon용 NativeImage (경로 로드 실패 시 undefined)
+function getWindowIcon() {
+  const iconPath = getIconPath();
+  if (!iconPath || !fs.existsSync(iconPath)) {
+    console.warn('⚠️ 창 아이콘 파일을 찾을 수 없습니다:', iconPath);
+    return undefined;
+  }
+  const iconImage = nativeImage.createFromPath(iconPath);
+  if (!iconImage.isEmpty()) {
+    return iconImage;
+  }
+  console.warn('⚠️ 창 아이콘 로드 실패(empty NativeImage):', iconPath);
+  return undefined;
+}
+
+function applyWindowIcon(win) {
+  if (!win || process.platform !== 'win32') return;
+  // 병원용과 동일: 경로 문자열로 setIcon (Windows 작업표시줄 호환성)
+  const iconPath = getIconPath();
+  if (iconPath && fs.existsSync(iconPath)) {
+    win.setIcon(iconPath);
+    console.log('🖼 창 아이콘 적용:', iconPath);
+  } else {
+    console.warn('⚠️ 창 아이콘 적용 실패: 파일 없음');
   }
 }
 
@@ -751,6 +782,29 @@ autoUpdater.allowPrerelease = false; // 프리릴리즈 버전 방지
 // 개발 환경에서는 업데이트 확인 안 함
 if (!app.isPackaged) {
   autoUpdater.forceDevUpdateConfig = false;
+}
+
+/**
+ * electron-updater는 업데이트 확인·다운로드 시 app-update.yml을 읽어 updaterCacheDirName 등을 씁니다.
+ * 설치본에 resources/app-update.yml이 없으면 ENOENT가 납니다. userData에 동일 내용을 두고 경로만 바꿉니다.
+ */
+function ensureAutoUpdaterConfigFile() {
+  if (!app.isPackaged) return;
+  const builtin = path.join(process.resourcesPath, 'app-update.yml');
+  if (fs.existsSync(builtin)) return;
+  const fallback = path.join(app.getPath('userData'), 'app-update.yml');
+  const body =
+    'owner: pharmcoder-kr\n' +
+    'repo: prescription\n' +
+    'provider: github\n' +
+    'updaterCacheDirName: auto-syrup-updater\n';
+  try {
+    fs.writeFileSync(fallback, body, 'utf8');
+    autoUpdater.updateConfigPath = fallback;
+    console.log('[UPDATER] resources에 app-update.yml 없음 → userData 사용:', fallback);
+  } catch (e) {
+    console.error('[UPDATER] fallback app-update.yml 작성 실패:', e);
+  }
 }
 
 // 업데이트 관련 이벤트 핸들러
@@ -827,9 +881,7 @@ function createWindow() {
     mainWindow.maximize(); // 앱 시작 시 최대화
     
     // Windows 작업표시줄 아이콘 강제 설정
-    if (process.platform === 'win32') {
-      mainWindow.setIcon(getIconPath());
-    }
+    applyWindowIcon(mainWindow);
   });
 
   // HTML 파일 로드
@@ -846,7 +898,53 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   }
 
-  // 윈도우가 닫히기 전에 정리 작업 수행
+  // 종료 팝업 창 생성
+function createShutdownWindow() {
+  if (shutdownWindow) {
+    shutdownWindow.focus();
+    return;
+  }
+
+  shutdownWindow = new BrowserWindow({
+    width: 450,
+    height: 350,
+    resizable: false,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    icon: getIconPath(),
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false
+    },
+    autoHideMenuBar: true,
+    title: '종료 중...'
+  });
+
+  shutdownWindow.loadFile('shutting-down.html');
+
+  // Windows 작업표시줄 아이콘 강제 설정
+  shutdownWindow.once('ready-to-show', () => {
+    applyWindowIcon(shutdownWindow);
+    shutdownWindow.show();
+  });
+
+  shutdownWindow.on('closed', () => {
+    shutdownWindow = null;
+  });
+
+  return shutdownWindow;
+}
+
+// 종료 상태 업데이트 함수
+function updateShutdownStatus(step, status, text) {
+  if (shutdownWindow && !shutdownWindow.isDestroyed()) {
+    shutdownWindow.webContents.send('shutdown:update-status', { step, status, text });
+  }
+}
+
+// 윈도우가 닫히기 전에 정리 작업 수행
   mainWindow.on('close', async (event) => {
     console.log('[APP] Window close event triggered');
     
@@ -857,44 +955,55 @@ function createWindow() {
     
     event.preventDefault(); // 윈도우 닫기 방지
     
+    // 종료 팝업 표시
+    createShutdownWindow();
+    
     try {
       console.log('[APP] Performing cleanup before window close...');
       
-      // 새 파일 카운트 확인
       try {
-        const count = await mainWindow.webContents.executeJavaScript('newFileParseCount');
-        console.log('[APP] New file count:', count);
-      } catch (countError) {
-        console.error('[APP] Failed to get file count:', countError.message);
-      }
-      
-      // 로그 파일 저장
-      try {
+        updateShutdownStatus(1, 'active', '로그 파일을 저장하고 있습니다...');
         const logPath = await mainWindow.webContents.executeJavaScript('saveLogToFile()');
         console.log('[APP] Log file saved:', logPath);
-      } catch (logError) {
-        console.error('[APP] Failed to save log:', logError.message);
+        updateShutdownStatus(1, 'completed', '종료 준비 중...');
+
+        updateShutdownStatus(2, 'active', '종료 전 정리를 진행하고 있습니다...');
+        try {
+          const deleteResult = await mainWindow.webContents.executeJavaScript(
+            'typeof cleanupTodayPrescriptionDataOnExit === "function" ? cleanupTodayPrescriptionDataOnExit() : { skipped: true }'
+          );
+          console.log('[APP] Today prescription cleanup:', deleteResult);
+          if (deleteResult && !deleteResult.skipped && deleteResult.deleted > 0) {
+            updateShutdownStatus(2, 'completed', `처방데이터 ${deleteResult.deleted}건 삭제 완료`);
+          } else {
+            updateShutdownStatus(2, 'completed', '종료 중...');
+          }
+        } catch (delErr) {
+          console.error('[APP] Today prescription cleanup failed:', delErr.message);
+          updateShutdownStatus(2, 'completed', '종료 중...');
+        }
+
+        updateShutdownStatus(3, 'active', '앱을 종료하고 있습니다...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        updateShutdownStatus(3, 'completed', '종료 완료');
+      } catch (cleanupErr) {
+        console.error('[APP] Shutdown cleanup:', cleanupErr.message);
       }
       
-      // 이벤트 전송
-      try {
-        await mainWindow.webContents.executeJavaScript('sendAllPendingEvents()');
-        console.log('[APP] Events sent successfully');
-      } catch (eventError) {
-        console.error('[APP] Failed to send events:', eventError.message);
-      }
-      
+    } catch (error) {
+      console.error('[APP] Cleanup failed:', error.message);
+    } finally {
       // 정리 완료 후 윈도우 닫기
       isQuitting = true;
       setTimeout(() => {
         console.log('[APP] Cleanup completed, closing window');
-        mainWindow.destroy();
-      }, 1000);
-      
-    } catch (error) {
-      console.error('[APP] Cleanup failed:', error.message);
-      isQuitting = true;
-      mainWindow.destroy();
+        if (shutdownWindow && !shutdownWindow.isDestroyed()) {
+          shutdownWindow.close();
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+        }
+      }, 500);
     }
   });
 
@@ -911,20 +1020,29 @@ app.whenReady().then(async () => {
   
   // Windows 작업표시줄 아이콘 강제 설정 (앱 시작 시)
   if (process.platform === 'win32') {
-    app.setAppUserModelId(APP_ID);
+    app.setAppUserModelId(TASKBAR_APP_ID);
   }
   
   // 디바이스 UID 초기화
   await getOrCreateDeviceUid();
+
+  // 업데이터 설정은 checkForUpdates보다 먼저 (모듈 레벨 setTimeout 레이스 방지)
+  ensureAutoUpdaterConfigFile();
   
   // 메인 윈도우 생성 (즉시 표시)
   createWindow();
-  
-  // 항상 로그인 창 표시 (자동 로그인 없음)
+
+  // 시작 시 로그인 창 표시
   console.log('[AUTH] Showing login window on startup');
   setTimeout(() => {
     createLoginWindow();
   }, 1000);
+
+  setTimeout(() => {
+    if (app.isPackaged) {
+      autoUpdater.checkForUpdates();
+    }
+  }, 5000);
 });
 
 // 백그라운드 약국 상태 확인 함수 (토큰 대신 ID/PW 사용)
@@ -972,15 +1090,8 @@ async function verifyPharmacyStatusInBackground() {
   }
 }
 
-// 앱 시작 5초 후 업데이트 확인 (패키징된 앱에서만)
-setTimeout(() => {
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdates();
-  }
-}, 5000);
-
 // 모든 윈도우가 닫히면 앱 종료
-// 앱 종료 전 이벤트 전송 및 로그 저장 완료 대기
+// (종료 시 파싱 배치 서버 전송 없음 — 창 닫기 핸들러에서 로그 저장만)
 let isQuitting = false;
 app.on('before-quit', (event) => {
   console.log('[APP] before-quit event triggered');
@@ -997,6 +1108,105 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
+});
+
+// ── HMI LCD OTA: PC가 GitHub TFT를 받아 LAN HTTP로 ESP32에 중계 ───────────────
+// ESP32는 raw.githubusercontent.com HTTPS에서 HTTP -7(NO_HTTP_SERVER)이 자주 남
+let hmiTftProxyServer = null;
+let hmiTftProxyFilePath = null;
+
+function pickLanIpForDevice(deviceIp) {
+  const interfaces = os.networkInterfaces();
+  const devicePrefix = String(deviceIp || '')
+    .split('.')
+    .slice(0, 3)
+    .join('.');
+  let fallback = null;
+  for (const nets of Object.values(interfaces)) {
+    for (const net of nets || []) {
+      if ((net.family !== 'IPv4' && net.family !== 4) || net.internal) continue;
+      if (!fallback) fallback = net.address;
+      const prefix = net.address.split('.').slice(0, 3).join('.');
+      if (devicePrefix && prefix === devicePrefix) return net.address;
+    }
+  }
+  return fallback || '127.0.0.1';
+}
+
+async function stopHmiTftProxy() {
+  const server = hmiTftProxyServer;
+  hmiTftProxyServer = null;
+  if (server) {
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
+  if (hmiTftProxyFilePath && fs.existsSync(hmiTftProxyFilePath)) {
+    try {
+      fs.unlinkSync(hmiTftProxyFilePath);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  hmiTftProxyFilePath = null;
+}
+
+/** GitHub TFT를 PC에 받은 뒤 ESP32가 받을 수 있는 http://LAN_IP:port/display.tft URL 반환 */
+ipcMain.handle('hmi-ota:prepare-local-tft', async (event, { tftUrl, deviceIp } = {}) => {
+  if (!tftUrl) throw new Error('tftUrl이 없습니다.');
+  await stopHmiTftProxy();
+
+  const tmpPath = path.join(app.getPath('temp'), `hmi-ota-display-${Date.now()}.tft`);
+  console.log('[HMI-OTA] TFT 다운로드 시작:', tftUrl);
+  const response = await axios.get(tftUrl, {
+    responseType: 'arraybuffer',
+    timeout: 180000,
+    maxContentLength: 64 * 1024 * 1024,
+    maxBodyLength: 64 * 1024 * 1024,
+    validateStatus: (s) => s === 200
+  });
+  const buf = Buffer.from(response.data);
+  if (buf.length < 4096) {
+    throw new Error(`TFT 파일이 너무 작습니다 (${buf.length} bytes)`);
+  }
+  fs.writeFileSync(tmpPath, buf);
+  hmiTftProxyFilePath = tmpPath;
+  console.log(`[HMI-OTA] TFT 저장됨: ${tmpPath} (${buf.length} bytes)`);
+
+  const lanIp = pickLanIpForDevice(deviceIp);
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url === '/' || req.url === '/display.tft' || req.url.startsWith('/display.tft?'))) {
+      try {
+        const data = fs.readFileSync(tmpPath);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': data.length,
+          'Connection': 'close',
+          'Access-Control-Allow-Origin': '*'
+        });
+        res.end(data);
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end(String(err.message || err));
+      }
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('not found');
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '0.0.0.0', () => resolve());
+  });
+  hmiTftProxyServer = server;
+  const port = server.address().port;
+  const localUrl = `http://${lanIp}:${port}/display.tft`;
+  console.log('[HMI-OTA] LAN 프록시 시작:', localUrl);
+  return { localUrl, lanIp, port, size: buf.length };
+});
+
+ipcMain.handle('hmi-ota:stop-local-tft', async () => {
+  await stopHmiTftProxy();
+  return { ok: true };
 });
 
 // IPC 핸들러들
@@ -1125,10 +1335,47 @@ ipcMain.handle('get-user-data-path', async () => {
 ipcMain.handle('check-for-updates', async () => {
   if (app.isPackaged) {
     try {
+      // electron-updater는 package.json의 publish 설정을 자동으로 읽어서 GitHub에서 확인
+      // 로컬 파일(app-update.yml)을 찾지 않도록 함
       const result = await autoUpdater.checkForUpdates();
       return { success: true, updateInfo: result.updateInfo };
     } catch (error) {
       console.error('업데이트 확인 오류:', error);
+      // app-update.yml 관련 오류는 무시 (GitHub provider 사용 시 불필요)
+      if (error.message && error.message.includes('app-update.yml')) {
+        console.log('로컬 업데이트 파일 오류 무시, GitHub에서 직접 확인 시도');
+        // GitHub API를 직접 사용하여 업데이트 확인
+        try {
+          const packageJson = require('./package.json');
+          const publishConfig = packageJson.build?.publish;
+          if (publishConfig && publishConfig.provider === 'github') {
+            // GitHub에서 최신 릴리즈 확인
+            const axios = require('axios');
+            const response = await axios.get(
+              `https://api.github.com/repos/${publishConfig.owner}/${publishConfig.repo}/releases/latest`,
+              {
+                headers: {
+                  'Accept': 'application/vnd.github.v3+json'
+                }
+              }
+            );
+            const latestVersion = response.data.tag_name.replace('v', '');
+            const currentVersion = packageJson.version;
+            return {
+              success: true,
+              updateInfo: {
+                version: latestVersion,
+                currentVersion: currentVersion,
+                hasUpdate: latestVersion !== currentVersion,
+                releaseNotes: response.data.body,
+                releaseDate: response.data.published_at
+              }
+            };
+          }
+        } catch (githubError) {
+          console.error('GitHub API 오류:', githubError);
+        }
+      }
       return { success: false, error: error.message };
     }
   } else {
@@ -1148,8 +1395,7 @@ ipcMain.handle('download-update', async () => {
 
 ipcMain.handle('install-update', () => {
   // 앱을 종료하고 업데이트 설치
-  // 두 번째 파라미터를 false로 설정하여 정상 설치 프로세스 사용 (바탕화면 아이콘 유지)
-  autoUpdater.quitAndInstall(false, false);
+  autoUpdater.quitAndInstall(false, true);
 });
 
 ipcMain.handle('get-app-version', () => {
@@ -1182,7 +1428,6 @@ ipcMain.on('enroll:skip', () => {
 
 // 로그인 상태 확인 (렌더러에서 사용)
 ipcMain.handle('auth:get-token', async () => {
-  // 레거시 호환성: 토큰 대신 로그인 정보 확인
   const credentials = loadCredentials();
   return credentials && credentials.username ? 'logged_in' : null;
 });
@@ -1190,7 +1435,7 @@ ipcMain.handle('auth:get-token', async () => {
 // 등록 상태 확인 (로컬 로그인 정보만 확인, 서버 검증 안 함)
 ipcMain.handle('auth:is-enrolled', async () => {
   const credentials = loadCredentials();
-  return !!(credentials && credentials.username); // 로그인 정보 존재 여부만 확인
+  return !!(credentials && credentials.username);
 });
 
 // 등록 창 열기 (설정에서)
@@ -1271,12 +1516,68 @@ ipcMain.handle('auth:get-saved-credentials', () => {
   return loadCredentials();
 });
 
+// 자동 로그인만 해제 (ID/PW는 유지 — 종료 시 데이터 전송용)
+ipcMain.handle('auth:disable-auto-login', () => {
+  const credentials = loadCredentials();
+  if (!credentials || !credentials.username) {
+    return { success: false, error: 'no_credentials', message: '저장된 로그인 정보가 없습니다.' };
+  }
+  if (credentials.rememberMe === false) {
+    return { success: true, alreadyDisabled: true, message: '이미 자동 로그인이 해제되어 있습니다.' };
+  }
+  saveCredentials({
+    username: credentials.username,
+    password: credentials.password || '',
+    rememberMe: false
+  });
+  console.log('🔓 자동 로그인 해제 완료');
+  return { success: true, message: '자동 로그인이 해제되었습니다. 다음 실행부터는 직접 로그인해야 합니다.' };
+});
+
 // 로그아웃 (로그인 정보 삭제)
 ipcMain.handle('auth:logout', async () => {
   deleteCredentials();
   // 로그인 모드 저장하지 않음 (다음 실행 시 다시 로그인 창 표시)
   console.log('🔓 로그아웃 완료');
   return { success: true };
+});
+
+// ── 디바이스 로그(문제사항) 서버 전송 ──────────────────────────────────────────
+ipcMain.handle('api:send-device-log', async (event, payload) => {
+  try {
+    const credentials = loadCredentials();
+    const deviceUid = await getOrCreateDeviceUid();
+
+    const body = {
+      username: credentials?.username || null,
+      device_uid: deviceUid,
+      mac: payload.mac,
+      ip: payload.ip,
+      nickname: payload.nickname,
+      firmware_version: payload.firmware_version,
+      firmware_model: payload.firmware_model,
+      hmi_version: payload.hmi_version,
+      log_text: payload.log_text,
+      app_version: app.getVersion(),
+      platform: os.platform(),
+      ts: new Date().toISOString()
+    };
+
+    const response = await axios.post(
+      `${API_BASE}/v1/device-logs`,
+      body,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+    );
+
+    console.log('✅ 디바이스 로그 전송 성공');
+    return { success: true, data: response.data };
+  } catch (error) {
+    console.error('❌ 디바이스 로그 전송 실패:', error.message);
+    return {
+      success: false,
+      error: error.response?.data?.error || error.message
+    };
+  }
 });
 
 // 배치 파싱 이벤트 전송 (렌더러에서 호출) - ID/PW 인증 사용

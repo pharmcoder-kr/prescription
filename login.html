@@ -242,12 +242,12 @@
                 <i class="fas fa-sign-in-alt"></i>
             </div>
             <h1>로그인</h1>
-            <p>파싱 기능을 사용하려면 로그인이 필요합니다.</p>
+            <p>처방전연동 기능을 사용하려면 로그인이 필요합니다.</p>
         </div>
 
         <div class="alert alert-info">
             <i class="fas fa-info-circle me-2"></i>
-            <strong>비로그인 모드:</strong> 파싱 기능 없이 수동 전송만 사용할 수 있습니다.
+            <strong>비로그인 모드:</strong> 처방전연동 기능 없이 수동 전송만 사용할 수 있습니다.
         </div>
 
         <form id="loginForm">
@@ -288,7 +288,7 @@
         </button>
 
         <button type="button" class="btn btn-skip" id="skipBtn">
-            <i class="fas fa-user-slash me-2"></i>비로그인 모드로 사용 (파싱 기능 없음)
+            <i class="fas fa-user-slash me-2"></i>비로그인 모드로 사용 (처방전연동 기능 없음)
         </button>
 
         <div class="alert alert-warning" id="warningMessage">
@@ -321,14 +321,58 @@
         const warningText = document.getElementById('warningText');
         const rememberMe = document.getElementById('rememberMe');
 
-        // 저장된 로그인 정보 불러오기
-        window.addEventListener('DOMContentLoaded', () => {
-            ipcRenderer.invoke('auth:get-saved-credentials').then((credentials) => {
-                if (credentials && credentials.username) {
-                    document.getElementById('username').value = credentials.username;
-                    rememberMe.checked = credentials.rememberMe !== false;
+        // 저장된 로그인 정보 불러오기 → 자동로그인 시 즉시 로그인
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const credentials = await ipcRenderer.invoke('auth:get-saved-credentials');
+                if (!credentials || !credentials.username) return;
+
+                document.getElementById('username').value = credentials.username;
+                const shouldAutoLogin = credentials.rememberMe !== false && !!credentials.password;
+                rememberMe.checked = credentials.rememberMe !== false;
+
+                if (!shouldAutoLogin) return;
+
+                document.getElementById('password').value = credentials.password;
+                loginBtn.disabled = true;
+                loginBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>자동 로그인 중...';
+                errorMessage.style.display = 'none';
+                successMessage.style.display = 'none';
+                warningMessage.style.display = 'none';
+
+                const result = await ipcRenderer.invoke('auth:login', {
+                    username: credentials.username,
+                    password: credentials.password,
+                    rememberMe: true
+                });
+
+                if (result.success) {
+                    if (result.billing_active) {
+                        successMessage.style.display = 'block';
+                        successMessage.innerHTML = '<i class="fas fa-check-circle me-2"></i><strong>자동 로그인 성공!</strong>';
+                        successMessage.className = 'alert alert-success';
+                    } else {
+                        warningMessage.style.display = 'block';
+                        warningText.textContent = '로그인 성공. 과금 기간이 만료되어 처방전연동 기능이 제한됩니다.';
+                    }
+                    setTimeout(() => {
+                        ipcRenderer.send('auth:login-complete');
+                    }, 800);
+                } else {
+                    if (result.error && result.error.includes('승인 대기')) {
+                        warningMessage.style.display = 'block';
+                        warningText.textContent = result.error;
+                    } else {
+                        showError(result.error || '자동 로그인에 실패했습니다. 비밀번호를 확인해주세요.');
+                    }
+                    // 실패 시 비밀번호는 비워 수동 입력 유도
+                    document.getElementById('password').value = '';
+                    resetButton();
                 }
-            });
+            } catch (error) {
+                console.error('자동 로그인 오류:', error);
+                resetButton();
+            }
         });
 
         // 회원가입 버튼
@@ -371,11 +415,11 @@
                     // 성공 메시지 표시
                     if (result.billing_active) {
                         successMessage.style.display = 'block';
-                        successMessage.innerHTML = '<i class="fas fa-check-circle me-2"></i><strong>로그인 성공!</strong> 파싱 기능을 사용할 수 있습니다.';
+                        successMessage.innerHTML = '<i class="fas fa-check-circle me-2"></i><strong>로그인 성공!</strong> 처방전연동 기능을 사용할 수 있습니다.';
                         successMessage.className = 'alert alert-success';
                     } else {
                         warningMessage.style.display = 'block';
-                        warningText.textContent = '로그인 성공. 과금 기간이 만료되어 파싱 기능이 제한됩니다.';
+                        warningText.textContent = '로그인 성공. 과금 기간이 만료되어 처방전연동 기능이 제한됩니다.';
                     }
                     
                     // 2초 후 창 닫기
@@ -401,7 +445,7 @@
 
         // 비로그인 모드 버튼
         skipBtn.addEventListener('click', () => {
-            if (confirm('비로그인 모드로 실행하시겠습니까?\n파싱 기능은 사용할 수 없으며, 수동 전송만 가능합니다.')) {
+            if (confirm('비로그인 모드로 실행하시겠습니까?\n처방전연동 기능은 사용할 수 없으며, 수동 전송만 가능합니다.')) {
                 ipcRenderer.send('auth:skip-login');
             }
         });
