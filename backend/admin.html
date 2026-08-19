@@ -169,6 +169,53 @@
             </div>
         </div>
 
+        <!-- 디바이스 로그 (문제사항) -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-exclamation-triangle me-2 text-warning"></i>디바이스 로그 (문제사항)</h5>
+                        <button class="btn btn-sm btn-outline-primary" onclick="loadDeviceLogs()">
+                            <i class="fas fa-sync-alt me-1"></i>새로고침
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="deviceLogsList" class="loading">
+                            <i class="fas fa-spinner fa-spin me-2"></i>로딩 중...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 디바이스 로그 상세 모달 -->
+        <div class="modal fade" id="deviceLogModal" tabindex="-1">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header bg-warning">
+                        <h5 class="modal-title"><i class="fas fa-bug me-2"></i>디바이스 로그 상세</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <strong>약국:</strong> <span id="dlPharmacy">-</span><br>
+                                <strong>기기:</strong> <span id="dlNickname">-</span><br>
+                                <strong>MAC:</strong> <span id="dlMac">-</span>
+                            </div>
+                            <div class="col-md-6">
+                                <strong>IP:</strong> <span id="dlIp">-</span><br>
+                                <strong>FW:</strong> <span id="dlFw">-</span><br>
+                                <strong>시간:</strong> <span id="dlTime">-</span>
+                            </div>
+                        </div>
+                        <h6>ESP32 로그:</h6>
+                        <pre id="dlLogText" style="max-height:500px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:0.5rem; font-size:0.8rem; white-space:pre-wrap;"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 월간 사용량 -->
         <div class="row mt-4">
             <div class="col-12">
@@ -310,6 +357,7 @@
             loadPendingPharmacies();
             loadProcessedPharmacies();
             loadMonthlyUsage();
+            loadDeviceLogs();
         });
 
         // 통계 로드
@@ -690,6 +738,77 @@
             } catch (error) {
                 console.error('삭제 처리 실패:', error);
                 alert('삭제 중 오류가 발생했습니다.');
+            }
+        }
+        // ── 디바이스 로그 (문제사항) ───────────────────────────────────────────
+        async function loadDeviceLogs() {
+            const container = document.getElementById('deviceLogsList');
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/device-logs?limit=50`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+
+                if (!data.success || !data.logs || data.logs.length === 0) {
+                    container.innerHTML = '<div class="text-center text-muted">접수된 문제사항이 없습니다.</div>';
+                    return;
+                }
+
+                let html = `<div class="table-responsive"><table class="table table-hover table-sm">
+                    <thead><tr>
+                        <th>시간</th><th>약국</th><th>기기</th><th>IP</th><th>FW</th><th>모델</th><th>상세</th>
+                    </tr></thead><tbody>`;
+
+                data.logs.forEach(log => {
+                    const time = log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
+                    html += `<tr>
+                        <td class="small">${time}</td>
+                        <td>${log.pharmacy_name || log.username || '-'}</td>
+                        <td>${log.nickname || log.mac || '-'}</td>
+                        <td class="small">${log.ip || '-'}</td>
+                        <td class="small">${log.firmware_version || '-'}</td>
+                        <td class="small">${log.firmware_model || '-'}</td>
+                        <td><button class="btn btn-sm btn-outline-info" onclick="viewDeviceLog(${log.id})">
+                            <i class="fas fa-eye me-1"></i>보기
+                        </button></td>
+                    </tr>`;
+                });
+
+                html += '</tbody></table></div>';
+                if (data.total) html += `<small class="text-muted">총 ${data.total}건</small>`;
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('디바이스 로그 로드 실패:', error);
+                container.innerHTML = '<div class="text-danger">로드 실패</div>';
+            }
+        }
+
+        async function viewDeviceLog(id) {
+            try {
+                const response = await fetch(`${API_BASE}/v1/admin/device-logs/${id}`, {
+                    headers: { 'X-Admin-Key': ADMIN_KEY }
+                });
+                const data = await response.json();
+                if (!data.success || !data.log) {
+                    alert('로그를 불러올 수 없습니다.');
+                    return;
+                }
+                const log = data.log;
+                document.getElementById('dlPharmacy').textContent = log.pharmacy_name || log.username || '-';
+                document.getElementById('dlNickname').textContent = log.nickname || '-';
+                document.getElementById('dlMac').textContent = log.mac || '-';
+                document.getElementById('dlIp').textContent = log.ip || '-';
+                document.getElementById('dlFw').textContent =
+                    (log.firmware_version || '?') + ' / ' + (log.firmware_model || '?') +
+                    (log.hmi_version ? ' / HMI ' + log.hmi_version : '');
+                document.getElementById('dlTime').textContent =
+                    log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
+                document.getElementById('dlLogText').textContent = log.log_text || '(로그 없음)';
+
+                new bootstrap.Modal(document.getElementById('deviceLogModal')).show();
+            } catch (error) {
+                console.error('디바이스 로그 상세 조회 실패:', error);
+                alert('로그 조회에 실패했습니다.');
             }
         }
     </script>

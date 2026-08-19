@@ -1311,6 +1311,131 @@ app.get('/v1/admin/usage/:ykiin', authenticateAdmin, async (req, res) => {
 });
 
 // ============================================
+// 디바이스 로그 (문제사항 보내기)
+// ============================================
+app.post('/v1/device-logs', async (req, res) => {
+  try {
+    const {
+      username, device_uid, mac, ip, nickname,
+      firmware_version, firmware_model, hmi_version,
+      log_text, app_version, platform, ts
+    } = req.body;
+
+    if (!mac || !log_text) {
+      return res.status(400).json({ error: 'mac과 log_text는 필수입니다.' });
+    }
+
+    // pharmacy 이름 조회 (username이 있는 경우)
+    let pharmacy_name = null;
+    let pharmacy_ykiin = null;
+    if (username) {
+      const { data: pharmacy } = await supabase
+        .from('pharmacies')
+        .select('name, ykiin')
+        .eq('contact_email', username)
+        .single();
+      if (pharmacy) {
+        pharmacy_name = pharmacy.name;
+        pharmacy_ykiin = pharmacy.ykiin;
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('device_logs')
+      .insert([{
+        username: username || null,
+        pharmacy_name,
+        pharmacy_ykiin,
+        device_uid: device_uid || null,
+        mac,
+        ip: ip || null,
+        nickname: nickname || null,
+        firmware_version: firmware_version || null,
+        firmware_model: firmware_model || null,
+        hmi_version: hmi_version || null,
+        log_text,
+        app_version: app_version || null,
+        platform: platform || null,
+        reported_at: ts || new Date().toISOString()
+      }])
+      .select();
+
+    if (error) {
+      console.error('디바이스 로그 저장 실패:', error);
+      return res.status(500).json({ error: '로그 저장에 실패했습니다.' });
+    }
+
+    // 텔레그램 알림 (선택)
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+      const msg = `🔧 문제사항 접수\n약국: ${pharmacy_name || '(미등록)'}\n기기: ${nickname || mac}\nIP: ${ip}\nFW: ${firmware_version || '?'}\n모델: ${firmware_model || '?'}`;
+      try {
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          chat_id: TELEGRAM_CHAT_ID,
+          text: msg
+        });
+      } catch (_) { /* 텔레그램 실패는 무시 */ }
+    }
+
+    res.json({ success: true, id: data?.[0]?.id });
+  } catch (error) {
+    console.error('디바이스 로그 API 오류:', error);
+    res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+  }
+});
+
+// 관리자: 디바이스 로그 조회
+app.get('/v1/admin/device-logs', async (req, res) => {
+  try {
+    const apiKey = req.headers['x-admin-key'];
+    if (apiKey !== ADMIN_API_KEY) {
+      return res.status(403).json({ error: '관리자 인증 실패' });
+    }
+
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    const { data, error, count } = await supabase
+      .from('device_logs')
+      .select('*', { count: 'exact' })
+      .order('reported_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      return res.status(500).json({ error: '로그 조회 실패' });
+    }
+
+    res.json({ success: true, logs: data, total: count });
+  } catch (error) {
+    console.error('디바이스 로그 조회 오류:', error);
+    res.status(500).json({ error: '서버 오류' });
+  }
+});
+
+// 관리자: 디바이스 로그 상세 조회 (로그 텍스트 포함)
+app.get('/v1/admin/device-logs/:id', async (req, res) => {
+  try {
+    const apiKey = req.headers['x-admin-key'];
+    if (apiKey !== ADMIN_API_KEY) {
+      return res.status(403).json({ error: '관리자 인증 실패' });
+    }
+
+    const { data, error } = await supabase
+      .from('device_logs')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: '로그를 찾을 수 없습니다.' });
+    }
+
+    res.json({ success: true, log: data });
+  } catch (error) {
+    res.status(500).json({ error: '서버 오류' });
+  }
+});
+
+// ============================================
 // 서버 시작
 // ============================================
 app.listen(PORT, () => {
@@ -1331,6 +1456,9 @@ app.listen(PORT, () => {
   console.log('  GET  /v1/admin/processed');
   console.log('  GET  /v1/admin/stats');
   console.log('  GET  /v1/admin/usage');
+  console.log('  POST /v1/device-logs');
+  console.log('  GET  /v1/admin/device-logs');
+  console.log('  GET  /v1/admin/device-logs/:id');
   console.log('===========================================');
   console.log('📱 텔레그램 알림 설정:');
   if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
