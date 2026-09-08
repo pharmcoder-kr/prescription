@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.44';
+const VERSION = '1.3.45';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 문제사항 보내기`;
+const RELEASE_TITLE = `v${VERSION} - 이팜 처방전 연동`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,19 +16,23 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 문제사항 보내기
+  const releaseNotes = `## v${VERSION}: 이팜 처방전 연동
 
 ### 주요 변경사항
-- **문제사항 보내기**: 연결된 시럽조제기 목록에서 ESP32 로그를 서버로 전송
-- 관리자 페이지에서 접수된 디바이스 로그를 확인할 수 있습니다
+- **이팜 TXT 처방전 연동 추가**: 환경설정에서 PM3000/팜플러스20, 유팜에 이어 **이팜** 선택 가능
+- 이팜 고정폭 TXT에서 환자명·접수시간·접수번호·약품코드·투약정보 파싱
+- 투약 코드 해석: 아침/점심/저녁 용량 + 일수 (예: \`101000005\` → 1회 1mL, 1일 2회, 5일, 총 10mL)
+- 문자 용량 지원: \`b\`=0.5, \`c\`=0.75, \`y\`=0.3333, \`z\`=0.6667 (예: \`bbb000005\` → 총 7.5mL)
+- 날짜 필터는 파일명 YYYYMMDD 기준 (PM과 동일)
+- 등록된 조제기의 약품코드와 일치하는 항목만 약품명 표시, 미등록은 공란
 
 ### 사용 방법
-1. 설정 화면의 연결 기기 테이블 우측 **문제사항 보내기** 버튼을 누릅니다
-2. 기기의 \`/logs\` 기록이 서버로 전송됩니다
-3. 관리자 페이지의 디바이스 로그에서 약국명·기기·펌웨어와 함께 확인할 수 있습니다
+1. 설정 → 처방조제프로그램 → **이팜** 선택
+2. 이팜에서 생성한 TXT가 쌓이는 폴더를 처방전 경로로 지정
+3. 처방연동조제 화면에서 날짜별 환자·약물 목록 확인 후 조제
 
-### 해결된 문제
-- 원격 현장에서 유선 시리얼 없이 조제기 상태를 파악하기 어려웠던 문제
+### 참고
+- PM3000, 유팜 파싱 로직은 변경하지 않았습니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -181,19 +185,14 @@ async function createRelease() {
 
     console.log('');
     console.log('===========================================');
-    console.log('✅ Release 생성 완료!');
+    console.log('✅ Release 작업 완료!');
+    console.log(`🔗 URL: ${releaseResponse.data.html_url}`);
     console.log('===========================================');
-    console.log('');
-    console.log('🔗 Release URL:');
-    console.log(`   ${releaseResponse.data.html_url}`);
-    console.log('');
-
   } catch (error) {
-    console.error('');
     console.error('❌ Release 생성 실패:', error.message);
     if (error.response) {
       console.error('상태 코드:', error.response.status);
-      console.error('응답 데이터:', JSON.stringify(error.response.data, null, 2));
+      console.error('응답:', JSON.stringify(error.response.data, null, 2));
     }
     process.exit(1);
   }

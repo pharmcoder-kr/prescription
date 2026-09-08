@@ -2051,8 +2051,187 @@ async function disableAutoLogin() {
     }
 }
 
+function getPrescriptionProgramLabel(program = prescriptionProgram) {
+    if (program === 'pm3000') return 'PM3000, 팜플러스20';
+    if (program === 'upam') return '유팜';
+    if (program === 'epharm') return '이팜';
+    return program || '알 수 없음';
+}
+
 function getPrescriptionFileExtension() {
-    return prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+    return prescriptionProgram === 'upam' ? '.xml' : '.txt';
+}
+
+function getRegisteredMedicineName(pillCode) {
+    const device = Object.values(savedConnections).find((d) => d.pill_code === pillCode);
+    return (device && device.nickname) ? device.nickname : '';
+}
+
+/** 이팜 문자 1회량: b=0.5, c=0.75, y=0.3333, z=0.6667 (그 외 알파벳은 용량 미지원) */
+const EPHARM_LETTER_DOSE_ML = {
+    b: 0.5,
+    c: 0.75,
+    y: 0.3333,
+    z: 0.6667
+};
+
+/** 이팜 투약량 문자: 0 / 1-9(mL) / 매핑된 알파벳 소수 mL */
+function parseEpharmDoseChar(ch) {
+    if (!ch || ch === '0') return 0;
+    if (ch >= '1' && ch <= '9') return parseInt(ch, 10);
+    const key = String(ch).toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, key)) {
+        return EPHARM_LETTER_DOSE_ML[key];
+    }
+    return NaN;
+}
+
+function isEpharmUnmappedLetterDoseChar(ch) {
+    if (!/[a-zA-Z]/.test(String(ch || ''))) return false;
+    const key = String(ch).toLowerCase();
+    return !Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, key);
+}
+
+/**
+ * 이팜 투약 필드 해석
+ * 예) 101000005 → 아침1 점심0 저녁1, 5일 → 1회량1, 횟수2, 일수5, 총량10
+ * 예) bbb000005 → 0.5×3×5 = 7.5
+ * 예) yyy000004 → 0.3333×3×4
+ * 예) 매핑 없는 알파벳만 알약 취급 → 1회량·총량 '-'
+ */
+function parseEpharmDoseField(doseRaw) {
+    const raw = String(doseRaw || '').trim();
+    if (!raw || /^0+$/.test(raw)) return null;
+
+    const m = raw.match(/^([0-9a-zA-Z])([0-9a-zA-Z])([0-9a-zA-Z])0+(\d+)$/);
+    if (!m) return null;
+
+    const doseChars = [m[1], m[2], m[3]];
+    const period = parseInt(m[4], 10) || 0;
+    if (period <= 0) return null;
+
+    const daily = doseChars.filter((ch) => ch !== '0').length;
+    if (daily === 0) return null;
+
+    // 매핑되지 않은 알파벳(a,d,… 등)만 알약으로 보고 용량 비움
+    if (doseChars.some(isEpharmUnmappedLetterDoseChar)) {
+        return {
+            volume: null,
+            daily,
+            period,
+            total: null,
+            isTablet: true
+        };
+    }
+
+    const doses = doseChars.map(parseEpharmDoseChar);
+    if (doses.some((d) => !Number.isFinite(d))) return null;
+
+    const nonzero = doses.filter((d) => d > 0);
+    const volume = nonzero[0];
+    const dailyTotalMl = doses[0] + doses[1] + doses[2];
+    // 소수 1회량(0.3333 등) 오차 최소화: 4자리까지 유지
+    const total = Math.round(dailyTotalMl * period * 10000) / 10000;
+
+    return { volume, daily, period, total, doses, isTablet: false };
+}
+
+/** 이팜 고정폭 TXT → 환자/약물 구조 */
+function parseEpharmPrescriptionContent(content, filePath, receiptNumber) {
+    const text = String(content || '');
+    if (!text.trim()) {
+        return null;
+    }
+
+    const headerMatch = text.match(/^(\d+)\s+(\S+)\s+.*?(\d{4})\/(\d{2})\/(\d{2})(\d{2}):(\d{2})/);
+    let patientName = headerMatch ? headerMatch[2] : '';
+    let contentDate = '';
+    let contentHm = '';
+
+    if (headerMatch) {
+        contentDate = `${headerMatch[3]}-${headerMatch[4]}-${headerMatch[5]}`;
+        contentHm = `${headerMatch[6]}:${headerMatch[7]}:00`;
+    } else {
+        // 고정폭 보조 추출 (헤더 정규식 실패 시)
+        patientName = text.slice(11, 28).trim();
+        const dtMatch = text.slice(50, 75).match(/(\d{4})\/(\d{2})\/(\d{2})(\d{2}):(\d{2})/);
+        if (dtMatch) {
+            contentDate = `${dtMatch[1]}-${dtMatch[2]}-${dtMatch[3]}`;
+            contentHm = `${dtMatch[4]}:${dtMatch[5]}:00`;
+        }
+    }
+
+    // 날짜 필터는 PM과 동일하게 파일명 YYYYMMDD 우선 (본문 날짜와 달라도 파일명 기준)
+    const fileDateMatch = String(receiptNumber || '').match(/^(\d{4})(\d{2})(\d{2})/);
+    let receiptDate = fileDateMatch
+        ? `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`
+        : (contentDate || '');
+    let receiptTime = '';
+
+    if (receiptDate && contentHm) {
+        receiptTime = `${receiptDate} ${contentHm}`;
+    } else if (contentDate && contentHm) {
+        receiptDate = receiptDate || contentDate;
+        receiptTime = `${receiptDate} ${contentHm}`;
+    } else {
+        try {
+            const stats = fs.statSync(filePath);
+            receiptTime = moment(stats.birthtime.getTime() > 0 ? stats.birthtime : undefined).format('YYYY-MM-DD HH:mm:ss');
+        } catch (_) {
+            receiptTime = moment().format('YYYY-MM-DD HH:mm:ss');
+        }
+        if (!receiptDate) {
+            receiptDate = receiptTime.slice(0, 10);
+        }
+    }
+
+    if (!receiptTime && receiptDate) {
+        receiptTime = `${receiptDate} 00:00:00`;
+    }
+
+    const medicines = [];
+    const medRe = /(\d{9})\s+([0-9a-zA-Z]{3}0+\d+)\s+(\d)/g;
+    let match;
+    let lineNumber = 0;
+
+    while ((match = medRe.exec(text)) !== null) {
+        const pillCode = match[1];
+        if (pillCode === '000000000') continue;
+
+        const dose = parseEpharmDoseField(match[2]);
+        if (!dose) {
+            logMessage(`이팜 약물 투약량 해석 실패: 코드 ${pillCode}, 필드 ${match[2]}`);
+            continue;
+        }
+
+        lineNumber += 1;
+        medicines.push({
+            pill_code: pillCode,
+            pill_name: getRegisteredMedicineName(pillCode),
+            volume: dose.volume,
+            daily: dose.daily,
+            period: dose.period,
+            total: dose.total,
+            isTablet: !!dose.isTablet,
+            date: receiptDate,
+            line_number: lineNumber
+        });
+    }
+
+    if (!patientName && medicines.length === 0) {
+        return null;
+    }
+
+    return {
+        patient: {
+            name: patientName || '(이름 없음)',
+            receipt_time: receiptTime,
+            receipt_date: receiptDate,
+            receipt_number: receiptNumber,
+            parsed_at: moment().format('YYYY-MM-DD HH:mm:ss')
+        },
+        medicines
+    };
 }
 
 function listPrescriptionFilesInPath() {
@@ -2063,13 +2242,23 @@ function listPrescriptionFilesInPath() {
         .map((name) => path.join(prescriptionPath, name));
 }
 
-/** 파일에서 YYYYMMDD 날짜 추출 (PM3000: 파일명 앞 8자리, 유팜: OrderDt) */
+/** 파일에서 YYYYMMDD 날짜 추출 (PM3000/이팜: 파일명 앞 8자리, 유팜: OrderDt) */
 function getPrescriptionFileDateKey(filePath) {
     const ext = getPrescriptionFileExtension();
     const base = path.basename(filePath, ext);
-    if (prescriptionProgram === 'pm3000') {
+    if (prescriptionProgram === 'pm3000' || prescriptionProgram === 'epharm') {
         const m = base.match(/^(\d{8})/);
-        return m ? m[1] : null;
+        if (m) return m[1];
+        if (prescriptionProgram === 'epharm') {
+            try {
+                const content = decodeKoreanPrescriptionText(fs.readFileSync(filePath)).content;
+                const dt = content.slice(55, 70).match(/(\d{4})\/(\d{2})\/(\d{2})/);
+                if (dt) return `${dt[1]}${dt[2]}${dt[3]}`;
+            } catch (_) {
+                /* ignore */
+            }
+        }
+        return null;
     }
     try {
         const content = fs.readFileSync(filePath, 'utf8');
@@ -2277,7 +2466,7 @@ async function loadPrescriptionProgramSettings() {
             if (programSelect) {
                 programSelect.value = prescriptionProgram;
             }
-            logMessage(`처방조제프로그램 설정 로드됨: ${prescriptionProgram === 'pm3000' ? 'PM3000, 팜플러스20' : '유팜'}`);
+            logMessage(`처방조제프로그램 설정 로드됨: ${getPrescriptionProgramLabel(prescriptionProgram)}`);
         } else {
             // 기본값 설정
             prescriptionProgram = 'pm3000';
@@ -2306,7 +2495,7 @@ async function savePrescriptionProgramSettings() {
         };
         const filePath = await getConfigFilePath('prescription_program_settings.json');
         fs.writeFileSync(filePath, JSON.stringify(settings, null, 2));
-        logMessage(`처방조제프로그램 설정 저장됨: ${prescriptionProgram === 'pm3000' ? 'PM3000, 팜플러스20' : '유팜'}`);
+        logMessage(`처방조제프로그램 설정 저장됨: ${getPrescriptionProgramLabel(prescriptionProgram)}`);
     } catch (error) {
         logMessage(`처방조제프로그램 설정 저장 중 오류: ${error.message}`);
     }
@@ -2318,7 +2507,7 @@ async function onPrescriptionProgramChanged() {
     if (programSelect) {
         prescriptionProgram = programSelect.value;
         await savePrescriptionProgramSettings();
-        logMessage(`처방조제프로그램 변경됨: ${prescriptionProgram === 'pm3000' ? 'PM3000, 팜플러스20' : '유팜'}`);
+        logMessage(`처방조제프로그램 변경됨: ${getPrescriptionProgramLabel(prescriptionProgram)}`);
         
         // 기존 파싱된 데이터 초기화
         parsedFiles.clear();
@@ -2368,7 +2557,7 @@ function parseAllPrescriptionFiles() {
     
     try {
         // 선택된 프로그램에 따라 파일 확장자 결정
-        const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+        const fileExtension = getPrescriptionFileExtension();
         const files = fs.readdirSync(prescriptionPath)
             .filter(file => file.endsWith(fileExtension))
             .map(file => path.join(prescriptionPath, file));
@@ -2414,10 +2603,14 @@ function volumeForEsp32(totalMl) {
 }
 
 function formatDoseDisplay(value) {
+    if (value === null || value === undefined || value === '' || value === '-') {
+        return '-';
+    }
     const n = Number(value);
-    if (!Number.isFinite(n)) return value;
+    if (!Number.isFinite(n)) return '-';
     if (Number.isInteger(n)) return String(n);
-    return String(parseFloat(n.toFixed(3)));
+    // 이팜 소수 1회량(0.3333, 0.6667 등) 표시용으로 최대 4자리
+    return String(parseFloat(n.toFixed(4)));
 }
 
 function parseMedicineFieldsFromParts(parts, index) {
@@ -2565,7 +2758,7 @@ function parsePrescriptionFile(filePath) {
         let content = '';
         
         // 선택된 프로그램에 따라 파일 확장자 결정
-        const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+        const fileExtension = getPrescriptionFileExtension();
         const receiptNumber = path.basename(filePath, fileExtension);
         
         if (prescriptionProgram === 'pm3000') {
@@ -2627,6 +2820,24 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
+            
+        } else if (prescriptionProgram === 'epharm') {
+            // 이팜 - 고정폭 TXT 파싱 (CP949/UTF-8)
+            const decoded = decodeKoreanPrescriptionText(buffer);
+            console.log(`🔤 이팜 TXT 디코딩: ${path.basename(filePath)} → ${decoded.encoding}`);
+            const parsed = parseEpharmPrescriptionContent(decoded.content, filePath, receiptNumber);
+            if (!parsed) {
+                logMessage(`이팜 TXT 파일 처방전연동 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
+                return;
+            }
+            if (parsed.medicines.length === 0) {
+                logMessage(`이팜 TXT 파싱 경고: 약물 없음 - ${path.basename(filePath)} (환자: ${parsed.patient.name})`);
+            } else {
+                logMessage(`이팜 TXT 파싱 완료: ${parsed.patient.name}, 약물 ${parsed.medicines.length}건`);
+            }
+            parsedPrescriptions[receiptNumber] = parsed;
+            parsedFiles.add(filePath);
+            saveParsedFiles();
             
         } else {
             // 유팜 - XML 파일 파싱
@@ -2866,11 +3077,11 @@ function loadPatientMedicines(receiptNumber) {
                            class="medicine-checkbox" 
                            data-pill-code="${medicine.pill_code}"
                            data-pill-name="${medicine.pill_name}"
-                           data-total="${medicine.total}"
+                           data-total="${medicine.total == null ? '' : medicine.total}"
                            ${isChecked ? 'checked' : ''}
                            ${isDisabled ? 'disabled' : ''}>
                 </td>
-                <td>${medicine.pill_name}</td>
+                <td>${medicine.pill_name || ''}</td>
                 <td>${medicine.pill_code}</td>
                 <td>${formatDoseDisplay(medicine.volume)}</td>
                 <td>${medicine.daily}</td>
@@ -3205,12 +3416,21 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, '등록되지 않은 약물');
     }
 
+    // 알약(문자 용량 yyy/bbb 등)은 mL 총량이 없어 시럽 전송 대상에서 제외
+    const syrupMedicines = registeredMedicines.filter(medicine => {
+        if (medicine.isTablet || medicine.total == null || !Number.isFinite(Number(medicine.total))) {
+            logMessage(`${medicine.pill_name || medicine.pill_code}은(는) 알약이거나 총량을 계산할 수 없어 전송에서 제외됩니다.`);
+            return false;
+        }
+        return true;
+    });
+
     // 시럽 최대량 초과 검증 (ESP32 전달량은 올림 정수 기준)
-    const overLimitMedicines = registeredMedicines.filter(medicine => {
+    const overLimitMedicines = syrupMedicines.filter(medicine => {
         return volumeForEsp32(medicine.total) > maxSyrupAmount;
     });
 
-    const validMedicines = registeredMedicines.filter(medicine => {
+    const validMedicines = syrupMedicines.filter(medicine => {
         return volumeForEsp32(medicine.total) <= maxSyrupAmount;
     });
 
@@ -3931,7 +4151,7 @@ function processNewPrescriptionFile(filePath) {
             return;
         }
         
-        const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+        const fileExtension = getPrescriptionFileExtension();
         if (!filePath.endsWith(fileExtension)) {
             return;
         }
@@ -3953,11 +4173,14 @@ function processNewPrescriptionFile(filePath) {
         
         parsePrescriptionFile(filePath);
         
-        // 파일명에서 날짜 추출
+        // 파일에서 날짜 추출
         let datePart = '';
-        if (prescriptionProgram === 'pm3000') {
-            // PM3000: 20250625xxxxxx.txt 형식
+        if (prescriptionProgram === 'pm3000' || prescriptionProgram === 'epharm') {
+            // PM3000/이팜: 20250625xxxxxx.txt 형식 (이팜은 본문 날짜로 보조)
             datePart = receiptNumber.substring(0, 8);
+            if (prescriptionProgram === 'epharm' && !/^20\d{6}$/.test(datePart)) {
+                datePart = getPrescriptionFileDateKey(filePath) || '';
+            }
         } else {
             // 유팜: XML 파일에서 OrderDt 추출
             try {
@@ -3991,7 +4214,7 @@ function processNewPrescriptionFile(filePath) {
         if (autoDispensing) {
             const prescription = parsedPrescriptions[receiptNumber];
             if (prescription && prescription.patient.receipt_date === formatted) {
-                const fileExt = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+                const fileExt = getPrescriptionFileExtension();
                 
                 // 저장된 시럽조제기에 매핑되는 약물이 하나라도 있는지 확인 (연결 상태와 무관)
                 const hasRegisteredMedicine = prescription.medicines.some(med => {
@@ -4073,7 +4296,7 @@ function startPrescriptionMonitor() {
                 return;
             }
             
-            const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+            const fileExtension = getPrescriptionFileExtension();
             if (!filename.endsWith(fileExtension)) {
                 return;
             }
@@ -4111,7 +4334,7 @@ function startPrescriptionMonitor() {
                     return;
                 }
                 
-                const fileExtension = prescriptionProgram === 'pm3000' ? '.txt' : '.xml';
+                const fileExtension = getPrescriptionFileExtension();
                 const files = fs.readdirSync(prescriptionPath)
                     .filter(file => file.endsWith(fileExtension))
                     .map(file => path.join(prescriptionPath, file));
