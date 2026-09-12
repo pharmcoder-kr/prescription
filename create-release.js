@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.45';
+const VERSION = '1.3.46';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 이팜 처방전 연동`;
+const RELEASE_TITLE = `v${VERSION} - 단일 실행(중복 실행 방지)`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,23 +16,15 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 이팜 처방전 연동
+  const releaseNotes = `## v${VERSION}: 단일 실행(중복 실행 방지)
 
 ### 주요 변경사항
-- **이팜 TXT 처방전 연동 추가**: 환경설정에서 PM3000/팜플러스20, 유팜에 이어 **이팜** 선택 가능
-- 이팜 고정폭 TXT에서 환자명·접수시간·접수번호·약품코드·투약정보 파싱
-- 투약 코드 해석: 아침/점심/저녁 용량 + 일수 (예: \`101000005\` → 1회 1mL, 1일 2회, 5일, 총 10mL)
-- 문자 용량 지원: \`b\`=0.5, \`c\`=0.75, \`y\`=0.3333, \`z\`=0.6667 (예: \`bbb000005\` → 총 7.5mL)
-- 날짜 필터는 파일명 YYYYMMDD 기준 (PM과 동일)
-- 등록된 조제기의 약품코드와 일치하는 항목만 약품명 표시, 미등록은 공란
+- **프로그램 중복 실행 방지**: 바탕화면 아이콘을 여러 번 눌러도 앱이 한 번만 실행됩니다
+- 이미 실행 중일 때 다시 실행하면 새 창을 열지 않고 **기존 창을 앞으로 가져옵니다**
+- 로그인/등록 창이 떠 있는 경우 해당 창을 우선 활성화합니다
 
-### 사용 방법
-1. 설정 → 처방조제프로그램 → **이팜** 선택
-2. 이팜에서 생성한 TXT가 쌓이는 폴더를 처방전 경로로 지정
-3. 처방연동조제 화면에서 날짜별 환자·약물 목록 확인 후 조제
-
-### 참고
-- PM3000, 유팜 파싱 로직은 변경하지 않았습니다
+### 해결된 문제
+- 아이콘 다중 클릭 시 오토시럽이 여러 개 동시에 켜지던 문제
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -54,7 +46,6 @@ async function createRelease() {
       'Accept': 'application/vnd.github.v3+json'
     };
 
-    // 1. 기존 릴리즈 확인 또는 생성
     console.log('1️⃣  기존 Release 확인 중...');
     let releaseResponse;
     let releaseId;
@@ -120,7 +111,6 @@ async function createRelease() {
       }
     ];
 
-    // 2. 같은 이름의 기존 에셋 삭제
     console.log('2️⃣  기존 에셋 확인 중...');
     try {
       const assetsResponse = await axios.get(
@@ -144,7 +134,6 @@ async function createRelease() {
     }
     console.log('');
 
-    // 3. 파일 업로드
     console.log('3️⃣  파일 업로드 중...');
     for (const file of filesToUpload) {
       if (!fs.existsSync(file.path)) {

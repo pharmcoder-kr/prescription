@@ -24,12 +24,34 @@ const TASKBAR_APP_ID = app.isPackaged ? APP_ID : process.execPath;
 // ⚠️ Windows 작업표시줄 아이콘/토스트/점프리스트 일관성을 위해 AppID를 가장 먼저 지정
 app.setAppUserModelId(TASKBAR_APP_ID);
 
+// 중복 실행 방지: 이미 실행 중이면 기존 창만 활성화하고 새 프로세스는 즉시 종료
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+  process.exit(0);
+}
+
+app.on('second-instance', () => {
+  focusExistingAppWindow();
+});
+
 let mainWindow;
 let enrollWindow;
 let loginWindow;
 let registerWindow;
 let shutdownWindow;
 const isDev = !app.isPackaged;
+
+function focusExistingAppWindow() {
+  const candidates = [loginWindow, registerWindow, enrollWindow, mainWindow]
+    .filter((w) => w && !w.isDestroyed());
+  const win = candidates[0] || BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (typeof win.moveTop === 'function') win.moveTop();
+}
 
 // ============================================
 // 인증 관련 설정
