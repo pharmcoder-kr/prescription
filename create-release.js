@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.46';
+const VERSION = '1.3.48';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 단일 실행(중복 실행 방지)`;
+const RELEASE_TITLE = `v${VERSION} - 시럽 최소량 설정 추가`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,15 +16,14 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 단일 실행(중복 실행 방지)
+  const releaseNotes = `## v${VERSION}: 시럽 최소량 설정 추가
 
 ### 주요 변경사항
-- **프로그램 중복 실행 방지**: 바탕화면 아이콘을 여러 번 눌러도 앱이 한 번만 실행됩니다
-- 이미 실행 중일 때 다시 실행하면 새 창을 열지 않고 **기존 창을 앞으로 가져옵니다**
-- 로그인/등록 창이 떠 있는 경우 해당 창을 우선 활성화합니다
-
-### 해결된 문제
-- 아이콘 다중 클릭 시 오토시럽이 여러 개 동시에 켜지던 문제
+- **시럽 최소량 설정**: 설정 화면의 "시럽 최소/최대량 설정"에서 최소량(mL)을 지정할 수 있습니다
+  - 예) 최소량을 11로 설정하면 10mL 이하 처방은 시럽조제기로 전송되지 않습니다 (작은 양을 30mL 시럽병에 담기 어려운 경우)
+  - 기본값 0 = 제한 없음 (기존과 동일하게 동작)
+- **처방연동조제**: 최소량 미만 약물은 전송에서 제외되고 전송상태에 "최소량 미달"로 표시됩니다
+- **수동 조제**: 최소량 미만 총량을 입력하면 경고 메시지를 띄우고 전송하지 않습니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

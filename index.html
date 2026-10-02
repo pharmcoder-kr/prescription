@@ -305,7 +305,7 @@
                                 <label class="form-check-label" for="autoDispensing">
                                     처방연동조제 활성화
                                     <span class="text-warning ms-1 align-middle" role="img" tabindex="0"
-                                          title="주의: 처방연동조제 시 시럽 최대량 설정이 적용됩니다. 초과하는 약물은 자동으로 실패 처리됩니다."
+                                          title="주의: 처방연동조제 시 시럽 최소/최대량 설정이 적용됩니다. 범위를 벗어나는 약물은 자동으로 실패 처리됩니다."
                                           style="cursor: help; font-size: 0.95rem;">
                                         <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
                                     </span>
@@ -319,10 +319,23 @@
                     <div class="card mb-4">
                         <div class="card-header">
                             <h5 class="card-title mb-0">
-                                <i class="fas fa-flask me-2"></i>시럽 최대량 설정
+                                <i class="fas fa-flask me-2"></i>시럽 최소/최대량 설정
                             </h5>
                         </div>
                         <div class="card-body">
+                            <div class="mb-3">
+                                <label for="minSyrupAmount" class="form-label">
+                                    <i class="fas fa-flask me-1"></i>시럽 최소량 (mL)
+                                    <span class="text-info ms-1 align-middle" role="img" tabindex="0"
+                                          title="설정 가이드 · 기본값: 0 (제한 없음) · ex) 11로 설정 시 10mL 이하 처방은 전송되지 않음 (작은 양을 30mL 시럽병에 담기 어려운 경우) · 미달 시: 처방연동조제에서는 실패 처리, 수동 조제에서는 경고 메시지"
+                                          style="cursor: help; font-size: 0.95rem;">
+                                        <i class="fas fa-info-circle" aria-hidden="true"></i>
+                                    </span>
+                                </label>
+                                <input type="number" class="form-control" id="minSyrupAmount"
+                                       placeholder="0" min="0" max="1000" value="0">
+                                <small class="text-muted">설정된 최소량보다 적은 약물은 전송되지 않으며, 처방연동조제와 수동 조제 모두에 적용됩니다. 0이면 제한하지 않습니다.</small>
+                            </div>
                             <div class="mb-3">
                                 <label for="maxSyrupAmount" class="form-label">
                                     <i class="fas fa-flask me-1"></i>시럽 최대량 (mL)

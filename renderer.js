@@ -85,6 +85,7 @@ let networkPrefix = null; // 현재 네트워크 프리픽스
 let networkInfoMap = new Map(); // 네트워크 프리픽스 -> 네트워크 정보 매핑
 let transmissionStatus = {}; // 각 환자의 전송상태 저장 (receiptNumber -> count)
 let maxSyrupAmount = 100; // 시럽 최대량 (기본값: 100mL)
+let minSyrupAmount = 0; // 시럽 최소량 (0 = 제한 없음)
 let medicineTransmissionStatus = {}; // 각 약물의 전송상태 저장 (receiptNumber_medicineCode -> count)
 let connectionCheckDelayTimer = null; // 연결 상태 확인 지연 타이머
 let isDispensingInProgress = false; // 조제 진행 중 플래그
@@ -404,6 +405,7 @@ async function getDeviceUid() {
 function getStatusText(status) {
     if (status === '등록되지 않은 약물') return '등록되지 않은 약물';
     if (status === '최대량 초과') return '최대량 초과';
+    if (status === '최소량 미달') return '최소량 미달';
     if (typeof status === 'number') {
         if (status === 0 || !isFinite(status)) return '0'; // -Infinity, Infinity, NaN 처리
         return status.toString();
@@ -414,6 +416,7 @@ function getStatusText(status) {
 function getStatusBadgeClass(status) {
     if (status === '등록되지 않은 약물') return 'bg-dark';
     if (status === '최대량 초과') return 'bg-warning';
+    if (status === '최소량 미달') return 'bg-warning';
     if (typeof status === 'number') {
         if (status === 0 || !isFinite(status)) return 'bg-secondary'; // -Infinity, Infinity, NaN 처리
         return 'bg-success';
@@ -506,7 +509,8 @@ const elements = {
     savedList: document.getElementById('savedList'),
     connectedTableBody: document.getElementById('connectedTableBody'),
     autoDispensing: document.getElementById('autoDispensing'),
-    maxSyrupAmount: document.getElementById('maxSyrupAmount')
+    maxSyrupAmount: document.getElementById('maxSyrupAmount'),
+    minSyrupAmount: document.getElementById('minSyrupAmount')
 };
 
 // 초기화
@@ -855,6 +859,22 @@ function setupEventListeners() {
         await saveAutoDispensingSettings();
         logMessage(`시럽 최대량 설정 변경: ${maxSyrupAmount}mL`);
     });
+
+    // 시럽 최소량 설정 이벤트
+    const onMinSyrupAmountChange = async (e) => {
+        const v = parseInt(e.target.value);
+        minSyrupAmount = Number.isFinite(v) && v > 0 ? v : 0;
+        e.target.value = minSyrupAmount;
+        await saveAutoDispensingSettings();
+        logMessage(minSyrupAmount > 0
+            ? `시럽 최소량 설정 변경: ${minSyrupAmount}mL (미만 처방은 전송 안 함)`
+            : '시럽 최소량 설정 변경: 제한 없음');
+        if (minSyrupAmount > maxSyrupAmount) {
+            logMessage(`⚠ 시럽 최소량(${minSyrupAmount}mL)이 최대량(${maxSyrupAmount}mL)보다 커서 모든 처방이 전송되지 않습니다.`);
+        }
+    };
+    elements.minSyrupAmount.addEventListener('change', onMinSyrupAmountChange);
+    elements.minSyrupAmount.addEventListener('blur', onMinSyrupAmountChange);
 
     // 환자 테이블 클릭 이벤트
     elements.patientTableBody.addEventListener('click', (event) => {
@@ -2416,11 +2436,12 @@ async function saveAutoDispensingSettings() {
     try {
         const settings = {
             autoDispensing: autoDispensing,
-            maxSyrupAmount: maxSyrupAmount
+            maxSyrupAmount: maxSyrupAmount,
+            minSyrupAmount: minSyrupAmount
         };
         const filePath = await getConfigFilePath('auto_dispensing_settings.json');
         fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
-        logMessage(`처방연동조제 설정 저장됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
+        logMessage(`처방연동조제 설정 저장됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최소량: ${minSyrupAmount}mL, 최대량: ${maxSyrupAmount}mL`);
     } catch (error) {
         logMessage(`처방연동조제 설정 저장 중 오류: ${error.message}`);
     }
@@ -2434,24 +2455,30 @@ async function loadAutoDispensingSettings() {
             const settings = JSON.parse(fs.readFileSync(filePath, 'utf8'));
             autoDispensing = settings.autoDispensing || false;
             maxSyrupAmount = settings.maxSyrupAmount || 100;
+            minSyrupAmount = settings.minSyrupAmount > 0 ? settings.minSyrupAmount : 0;
             elements.autoDispensing.checked = autoDispensing;
             elements.maxSyrupAmount.value = maxSyrupAmount;
-            logMessage(`처방연동조제 설정 로드됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최대량: ${maxSyrupAmount}mL`);
+            elements.minSyrupAmount.value = minSyrupAmount;
+            logMessage(`처방연동조제 설정 로드됨: ${autoDispensing ? '활성화' : '비활성화'}, 시럽 최소량: ${minSyrupAmount}mL, 최대량: ${maxSyrupAmount}mL`);
         } else {
             // 기본값 설정
             autoDispensing = false;
             maxSyrupAmount = 100;
+            minSyrupAmount = 0;
             elements.autoDispensing.checked = false;
             elements.maxSyrupAmount.value = maxSyrupAmount;
-            logMessage('처방연동조제 설정 파일이 없어 기본값으로 설정됨: 비활성화, 시럽 최대량: 100mL');
+            elements.minSyrupAmount.value = minSyrupAmount;
+            logMessage('처방연동조제 설정 파일이 없어 기본값으로 설정됨: 비활성화, 시럽 최소량: 0mL(제한 없음), 최대량: 100mL');
         }
     } catch (error) {
         logMessage(`처방연동조제 설정 로드 중 오류: ${error.message}`);
         // 오류 발생 시 기본값 설정
         autoDispensing = false;
         maxSyrupAmount = 100;
+        minSyrupAmount = 0;
         elements.autoDispensing.checked = false;
         elements.maxSyrupAmount.value = maxSyrupAmount;
+        elements.minSyrupAmount.value = minSyrupAmount;
     }
 }
 
@@ -3430,9 +3457,22 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
         return volumeForEsp32(medicine.total) > maxSyrupAmount;
     });
 
-    const validMedicines = syrupMedicines.filter(medicine => {
-        return volumeForEsp32(medicine.total) <= maxSyrupAmount;
+    // 시럽 최소량 미달 검증 (0이면 제한 없음)
+    const underLimitMedicines = syrupMedicines.filter(medicine => {
+        const vol = volumeForEsp32(medicine.total);
+        return minSyrupAmount > 0 && vol < minSyrupAmount && vol <= maxSyrupAmount;
     });
+
+    const validMedicines = syrupMedicines.filter(medicine => {
+        const vol = volumeForEsp32(medicine.total);
+        return vol <= maxSyrupAmount && !(minSyrupAmount > 0 && vol < minSyrupAmount);
+    });
+
+    for (const medicine of underLimitMedicines) {
+        const sendVol = volumeForEsp32(medicine.total);
+        logMessage(`${medicine.pill_name}은(는) 총량 ${formatDoseDisplay(medicine.total)}mL(전송 ${sendVol}mL)가 설정된 최소량 ${minSyrupAmount}mL 미만이므로 전송에서 제외됩니다.`);
+        await updateMedicineTransmissionStatus(receiptNumber, medicine.pill_code, '최소량 미달');
+    }
 
     // 최대량을 초과하는 약물들을 실패 상태로 표시
     if (overLimitMedicines.length > 0) {
@@ -3478,13 +3518,13 @@ async function startDispensingInternal(receiptNumber, isAuto = false) {
     }
     
     if (connectedMedicines.length === 0) {
-        // 등록되지 않은 약물이나 최대량 초과 약물만 있는 경우 팝업을 띄우지 않음
+        // 등록되지 않은 약물이나 최소/최대량 범위 밖 약물만 있는 경우 팝업을 띄우지 않음
         const hasOnlyUnregisteredOrOverLimit = selectedMedicines.length > 0 && 
-            unregisteredMedicines.length + overLimitMedicines.length === selectedMedicines.length;
+            unregisteredMedicines.length + overLimitMedicines.length + underLimitMedicines.length === selectedMedicines.length;
         
         if (hasOnlyUnregisteredOrOverLimit) {
-            // 등록되지 않은 약물이나 최대량 초과 약물만 있는 경우 조용히 처리
-            logMessage('전송할 수 있는 약물이 없습니다. (등록되지 않은 약물 또는 최대량 초과 약물만 선택됨)');
+            // 등록되지 않은 약물이나 최소/최대량 범위 밖 약물만 있는 경우 조용히 처리
+            logMessage('전송할 수 있는 약물이 없습니다. (등록되지 않은 약물 또는 최소/최대량 범위 밖 약물만 선택됨)');
         } else {
             // 다른 이유로 전송할 수 없는 경우에만 팝업 표시
             showMessage('warning', '전송할 수 있는 약물이 없습니다.');
@@ -5251,6 +5291,13 @@ function createManualRow(initMac = null, initTotal = '') {
         // 시럽 최대량 검증
         if (Number(total) > maxSyrupAmount) {
             const message = `총량 ${total}mL가 설정된 최대량 ${maxSyrupAmount}mL를 초과합니다.\n\n해결 방법:\n• 설정에서 시럽 최대량을 ${total}mL 이상으로 조정\n• 더 작은 용량으로 분할하여 전송\n• 현재 설정: ${maxSyrupAmount}mL`;
+            await showMessage('warning', message);
+            return;
+        }
+
+        // 시럽 최소량 검증 (0이면 제한 없음)
+        if (minSyrupAmount > 0 && Number(total) < minSyrupAmount) {
+            const message = `총량 ${total}mL가 설정된 최소량 ${minSyrupAmount}mL보다 적습니다.\n\n해결 방법:\n• 설정에서 시럽 최소량을 ${total}mL 이하로 조정 (0이면 제한 없음)\n• 현재 설정: ${minSyrupAmount}mL`;
             await showMessage('warning', message);
             return;
         }

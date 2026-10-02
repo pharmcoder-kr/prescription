@@ -989,20 +989,32 @@ function updateShutdownStatus(step, status, text) {
         console.log('[APP] Log file saved:', logPath);
         updateShutdownStatus(1, 'completed', '종료 준비 중...');
 
-        updateShutdownStatus(2, 'active', '종료 전 정리를 진행하고 있습니다...');
+        updateShutdownStatus(2, 'active', '사용량 데이터를 전송하고 있습니다...');
+        try {
+          await mainWindow.webContents.executeJavaScript(
+            'typeof sendAllPendingEvents === "function" ? sendAllPendingEvents() : null'
+          );
+          console.log('[APP] Pending parse events sent');
+          updateShutdownStatus(2, 'completed', '사용량 전송 완료');
+        } catch (sendErr) {
+          console.error('[APP] Parse event send failed:', sendErr.message);
+          updateShutdownStatus(2, 'completed', '사용량 전송 생략');
+        }
+
+        updateShutdownStatus(3, 'active', '종료 전 정리를 진행하고 있습니다...');
         try {
           const deleteResult = await mainWindow.webContents.executeJavaScript(
             'typeof cleanupTodayPrescriptionDataOnExit === "function" ? cleanupTodayPrescriptionDataOnExit() : { skipped: true }'
           );
           console.log('[APP] Today prescription cleanup:', deleteResult);
           if (deleteResult && !deleteResult.skipped && deleteResult.deleted > 0) {
-            updateShutdownStatus(2, 'completed', `처방데이터 ${deleteResult.deleted}건 삭제 완료`);
+            updateShutdownStatus(3, 'completed', `처방데이터 ${deleteResult.deleted}건 삭제 완료`);
           } else {
-            updateShutdownStatus(2, 'completed', '종료 중...');
+            updateShutdownStatus(3, 'completed', '종료 중...');
           }
         } catch (delErr) {
           console.error('[APP] Today prescription cleanup failed:', delErr.message);
-          updateShutdownStatus(2, 'completed', '종료 중...');
+          updateShutdownStatus(3, 'completed', '종료 중...');
         }
 
         updateShutdownStatus(3, 'active', '앱을 종료하고 있습니다...');
