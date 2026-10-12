@@ -1592,6 +1592,7 @@ ipcMain.handle('api:send-device-log', async (event, payload) => {
       firmware_model: payload.firmware_model,
       hmi_version: payload.hmi_version,
       log_text: payload.log_text,
+      user_message: payload.user_message || null,
       app_version: app.getVersion(),
       platform: os.platform(),
       ts: new Date().toISOString()

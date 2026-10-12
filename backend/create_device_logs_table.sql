@@ -12,11 +12,15 @@ CREATE TABLE IF NOT EXISTS device_logs (
   firmware_model TEXT,              -- ESP32 모델 (loadcell/hospital/basic)
   hmi_version TEXT,                 -- HMI LCD 버전
   log_text TEXT NOT NULL,           -- ESP32 로그 내용
+  user_message TEXT,                -- 사용자가 작성한 문제 설명
   app_version TEXT,                 -- 오토시럽 앱 버전
   platform TEXT,                    -- OS (win32 등)
   reported_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 기존 테이블에 사용자 메시지 컬럼 추가
+ALTER TABLE device_logs ADD COLUMN IF NOT EXISTS user_message TEXT;
 
 -- 인덱스
 CREATE INDEX IF NOT EXISTS idx_device_logs_reported_at ON device_logs(reported_at DESC);

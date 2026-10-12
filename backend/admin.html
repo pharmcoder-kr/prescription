@@ -209,6 +209,8 @@
                                 <strong>시간:</strong> <span id="dlTime">-</span>
                             </div>
                         </div>
+                        <h6>사용자 메시지:</h6>
+                        <div id="dlUserMessage" class="alert alert-warning mb-3" style="white-space:pre-wrap;"></div>
                         <h6>ESP32 로그:</h6>
                         <pre id="dlLogText" style="max-height:500px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:0.5rem; font-size:0.8rem; white-space:pre-wrap;"></pre>
                     </div>
@@ -741,6 +743,15 @@
             }
         }
         // ── 디바이스 로그 (문제사항) ───────────────────────────────────────────
+        function escapeHtml(text) {
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         async function loadDeviceLogs() {
             const container = document.getElementById('deviceLogsList');
             try {
@@ -756,15 +767,18 @@
 
                 let html = `<div class="table-responsive"><table class="table table-hover table-sm">
                     <thead><tr>
-                        <th>시간</th><th>약국</th><th>기기</th><th>IP</th><th>FW</th><th>모델</th><th>상세</th>
+                        <th>시간</th><th>약국</th><th>기기</th><th>문제 내용</th><th>IP</th><th>FW</th><th>모델</th><th>상세</th>
                     </tr></thead><tbody>`;
 
                 data.logs.forEach(log => {
                     const time = log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
+                    const userMsg = log.user_message || '';
+                    const msgPreview = userMsg.length > 40 ? `${userMsg.slice(0, 40)}…` : userMsg;
                     html += `<tr>
                         <td class="small">${time}</td>
                         <td>${log.pharmacy_name || log.username || '-'}</td>
                         <td>${log.nickname || log.mac || '-'}</td>
+                        <td class="small" title="${escapeHtml(userMsg)}">${msgPreview ? escapeHtml(msgPreview) : '<span class="text-muted">-</span>'}</td>
                         <td class="small">${log.ip || '-'}</td>
                         <td class="small">${log.firmware_version || '-'}</td>
                         <td class="small">${log.firmware_model || '-'}</td>
@@ -803,6 +817,7 @@
                     (log.hmi_version ? ' / HMI ' + log.hmi_version : '');
                 document.getElementById('dlTime').textContent =
                     log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
+                document.getElementById('dlUserMessage').textContent = log.user_message || '(작성된 내용 없음)';
                 document.getElementById('dlLogText').textContent = log.log_text || '(로그 없음)';
 
                 new bootstrap.Modal(document.getElementById('deviceLogModal')).show();

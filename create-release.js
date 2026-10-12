@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.48';
+const VERSION = '1.3.49';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 시럽 최소량 설정 추가`;
+const RELEASE_TITLE = `v${VERSION} - 문제사항 보내기에 내용 작성 기능 추가`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,14 +16,13 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 시럽 최소량 설정 추가
+  const releaseNotes = `## v${VERSION}: 문제사항 보내기에 내용 작성 기능 추가
 
 ### 주요 변경사항
-- **시럽 최소량 설정**: 설정 화면의 "시럽 최소/최대량 설정"에서 최소량(mL)을 지정할 수 있습니다
-  - 예) 최소량을 11로 설정하면 10mL 이하 처방은 시럽조제기로 전송되지 않습니다 (작은 양을 30mL 시럽병에 담기 어려운 경우)
-  - 기본값 0 = 제한 없음 (기존과 동일하게 동작)
-- **처방연동조제**: 최소량 미만 약물은 전송에서 제외되고 전송상태에 "최소량 미달"로 표시됩니다
-- **수동 조제**: 최소량 미만 총량을 입력하면 경고 메시지를 띄우고 전송하지 않습니다
+- **문제사항 보내기 팝업**: 연결된 기기의 "문제사항 보내기"를 누르면 팝업창이 열립니다
+  - 언제, 무엇을 하던 중, 어떤 증상이 있었는지 자세히 적을 수 있습니다 (최대 2000자)
+  - "전송하기"를 누르면 작성한 내용과 기기 로그가 함께 개발팀으로 전송됩니다
+  - 전송에 실패하면 작성한 내용이 그대로 남아 있어 다시 전송할 수 있습니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

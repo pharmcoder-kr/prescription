@@ -1320,6 +1320,9 @@ app.post('/v1/device-logs', async (req, res) => {
       firmware_version, firmware_model, hmi_version,
       log_text, app_version, platform, ts
     } = req.body;
+    const user_message = typeof req.body.user_message === 'string'
+      ? req.body.user_message.trim().slice(0, 2000)
+      : '';
 
     if (!mac || !log_text) {
       return res.status(400).json({ error: 'mac과 log_text는 필수입니다.' });
@@ -1340,25 +1343,34 @@ app.post('/v1/device-logs', async (req, res) => {
       }
     }
 
-    const { data, error } = await supabase
-      .from('device_logs')
-      .insert([{
-        username: username || null,
-        pharmacy_name,
-        pharmacy_ykiin,
-        device_uid: device_uid || null,
-        mac,
-        ip: ip || null,
-        nickname: nickname || null,
-        firmware_version: firmware_version || null,
-        firmware_model: firmware_model || null,
-        hmi_version: hmi_version || null,
-        log_text,
-        app_version: app_version || null,
-        platform: platform || null,
-        reported_at: ts || new Date().toISOString()
-      }])
-      .select();
+    const row = {
+      username: username || null,
+      pharmacy_name,
+      pharmacy_ykiin,
+      device_uid: device_uid || null,
+      mac,
+      ip: ip || null,
+      nickname: nickname || null,
+      firmware_version: firmware_version || null,
+      firmware_model: firmware_model || null,
+      hmi_version: hmi_version || null,
+      log_text,
+      user_message: user_message || null,
+      app_version: app_version || null,
+      platform: platform || null,
+      reported_at: ts || new Date().toISOString()
+    };
+
+    let { data, error } = await supabase.from('device_logs').insert([row]).select();
+
+    // user_message 컬럼 마이그레이션 전이면 메시지를 로그 앞에 붙여 저장
+    if (error && /user_message/.test(error.message || '')) {
+      const { user_message: _omit, ...legacyRow } = row;
+      if (user_message) {
+        legacyRow.log_text = `[사용자 메시지]\n${user_message}\n\n[ESP32 로그]\n${log_text}`;
+      }
+      ({ data, error } = await supabase.from('device_logs').insert([legacyRow]).select());
+    }
 
     if (error) {
       console.error('디바이스 로그 저장 실패:', error);
@@ -1367,7 +1379,11 @@ app.post('/v1/device-logs', async (req, res) => {
 
     // 텔레그램 알림 (선택)
     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-      const msg = `🔧 문제사항 접수\n약국: ${pharmacy_name || '(미등록)'}\n기기: ${nickname || mac}\nIP: ${ip}\nFW: ${firmware_version || '?'}\n모델: ${firmware_model || '?'}`;
+      let msg = `🔧 문제사항 접수\n약국: ${pharmacy_name || '(미등록)'}\n기기: ${nickname || mac}\nIP: ${ip}\nFW: ${firmware_version || '?'}\n모델: ${firmware_model || '?'}`;
+      if (user_message) {
+        const preview = user_message.length > 500 ? `${user_message.slice(0, 500)}…` : user_message;
+        msg += `\n\n💬 사용자 메시지:\n${preview}`;
+      }
       try {
         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
           chat_id: TELEGRAM_CHAT_ID,

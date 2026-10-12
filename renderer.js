@@ -4124,16 +4124,42 @@ function updateDeviceStatus(ip, status) {
     updateMedicineColors();
 }
 
-// ── 문제사항 보내기: ESP32 로그 수집 → 서버 전송 ─────────────────────────────
-async function sendDeviceLog(ip, mac, nickname) {
-    const btn = event?.target?.closest('button');
-    const originalHtml = btn?.innerHTML;
-    try {
-        if (btn) {
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>전송 중...';
-        }
+// ── 문제사항 보내기: 사용자 메시지 입력 → ESP32 로그 수집 → 서버 전송 ──────────
+let deviceIssueTarget = null;
 
+function sendDeviceLog(ip, mac, nickname) {
+    deviceIssueTarget = { ip, mac, nickname };
+    document.getElementById('deviceIssueTarget').textContent = `${nickname} (${ip})`;
+    const textarea = document.getElementById('deviceIssueMessage');
+    textarea.value = '';
+    textarea.classList.remove('is-invalid');
+
+    const modalEl = document.getElementById('deviceIssueModal');
+    modalEl.addEventListener('shown.bs.modal', () => textarea.focus(), { once: true });
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+async function submitDeviceIssue() {
+    if (!deviceIssueTarget) return;
+    const textarea = document.getElementById('deviceIssueMessage');
+    const userMessage = textarea.value.trim();
+    if (!userMessage) {
+        textarea.classList.add('is-invalid');
+        textarea.focus();
+        return;
+    }
+    textarea.classList.remove('is-invalid');
+
+    const { ip, mac, nickname } = deviceIssueTarget;
+    const modalEl = document.getElementById('deviceIssueModal');
+    const btn = document.getElementById('deviceIssueSendBtn');
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    textarea.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>전송 중...';
+
+    let sent = false;
+    try {
         logMessage(`🔄 ${nickname}(${ip}) 로그 수집 시작...`);
 
         let deviceLog = '(로그 수집 실패)';
@@ -4158,12 +4184,15 @@ async function sendDeviceLog(ip, mac, nickname) {
             firmware_version: versionInfo?.version || null,
             firmware_model: versionInfo?.model || null,
             hmi_version: versionInfo?.hmi_version || null,
-            log_text: deviceLog
+            log_text: deviceLog,
+            user_message: userMessage
         });
 
         if (result.success) {
+            sent = true;
             logMessage(`✅ ${nickname} 문제사항 전송 완료`);
-            await showMessage('success', `${nickname}의 로그가 서버로 전송되었습니다.\n개발팀에서 확인 후 조치하겠습니다.`);
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            await showMessage('success', `${nickname}의 문제사항과 로그가 서버로 전송되었습니다.\n개발팀에서 확인 후 조치하겠습니다.`);
         } else {
             logMessage(`❌ ${nickname} 문제사항 전송 실패: ${result.error}`);
             await showMessage('error', `전송 실패: ${result.error || '서버 연결 오류'}`);
@@ -4172,10 +4201,10 @@ async function sendDeviceLog(ip, mac, nickname) {
         logMessage(`❌ 문제사항 보내기 오류: ${err.message}`);
         await showMessage('error', `오류가 발생했습니다: ${err.message}`);
     } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        btn.disabled = false;
+        textarea.disabled = false;
+        btn.innerHTML = originalHtml;
+        if (sent) deviceIssueTarget = null;
     }
 }
 
