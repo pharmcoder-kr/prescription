@@ -752,6 +752,15 @@
                 .replace(/'/g, '&#39;');
         }
 
+        // user_message 컬럼이 없던 시기에는 서버가 메시지를 log_text 앞에 붙여 저장함
+        function splitDeviceLog(log) {
+            const text = log.log_text || '';
+            if (log.user_message) return { userMsg: log.user_message, logText: text };
+            const m = text.match(/^\[사용자 메시지\]\n([\s\S]*?)\n\n\[ESP32 로그\]\n([\s\S]*)$/);
+            if (m) return { userMsg: m[1], logText: m[2] };
+            return { userMsg: '', logText: text };
+        }
+
         async function loadDeviceLogs() {
             const container = document.getElementById('deviceLogsList');
             try {
@@ -772,7 +781,7 @@
 
                 data.logs.forEach(log => {
                     const time = log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
-                    const userMsg = log.user_message || '';
+                    const { userMsg } = splitDeviceLog(log);
                     const msgPreview = userMsg.length > 40 ? `${userMsg.slice(0, 40)}…` : userMsg;
                     html += `<tr>
                         <td class="small">${time}</td>
@@ -817,8 +826,9 @@
                     (log.hmi_version ? ' / HMI ' + log.hmi_version : '');
                 document.getElementById('dlTime').textContent =
                     log.reported_at ? new Date(log.reported_at).toLocaleString('ko-KR') : '-';
-                document.getElementById('dlUserMessage').textContent = log.user_message || '(작성된 내용 없음)';
-                document.getElementById('dlLogText').textContent = log.log_text || '(로그 없음)';
+                const { userMsg, logText } = splitDeviceLog(log);
+                document.getElementById('dlUserMessage').textContent = userMsg || '(작성된 내용 없음)';
+                document.getElementById('dlLogText').textContent = logText || '(로그 없음)';
 
                 new bootstrap.Modal(document.getElementById('deviceLogModal')).show();
             } catch (error) {
