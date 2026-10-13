@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.49';
+const VERSION = '1.3.50';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 문제사항 보내기에 내용 작성 기능 추가`;
+const RELEASE_TITLE = `v${VERSION} - 이팜 문자 용량 확대, 조제기 정보 수정, 최신 처방 상단 표시`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,13 +16,19 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 문제사항 보내기에 내용 작성 기능 추가
+  const releaseNotes = `## v${VERSION}: 이팜 문자 용량 확대, 조제기 정보 수정, 최신 처방 상단 표시
 
 ### 주요 변경사항
-- **문제사항 보내기 팝업**: 연결된 기기의 "문제사항 보내기"를 누르면 팝업창이 열립니다
-  - 언제, 무엇을 하던 중, 어떤 증상이 있었는지 자세히 적을 수 있습니다 (최대 2000자)
-  - "전송하기"를 누르면 작성한 내용과 기기 로그가 함께 개발팀으로 전송됩니다
-  - 전송에 실패하면 작성한 내용이 그대로 남아 있어 다시 전송할 수 있습니다
+- **이팜 문자 1회량 확대**: 소문자 a~x를 0.25mL 단위(정수 제외)로 인식합니다
+  - a=0.25, b=0.5, c=0.75, d=1.25, e=1.5, f=1.75, g=2.25, h=2.5 … x=7.75
+  - y=1/3mL, z=2/3mL는 기존과 같습니다
+  - 대문자는 의미가 확인되지 않아 알약처럼 1회량·총량을 '-'로 표시합니다
+- **저장된 시럽조제기 정보 수정**: 목록에서 약품명과 약품코드를 바로 수정할 수 있습니다
+  - 약품명, 약품코드, IP를 한 줄에 표시합니다
+  - Enter 또는 다른 곳을 클릭하면 바로 저장됩니다
+  - 약품코드를 바꾸면 선택된 환자의 약물 목록 등록 상태가 즉시 갱신됩니다
+- **최신 처방전 상단 표시**: 새로 들어온 처방전이 환자 목록 맨 위에 표시됩니다
+  - 처방 파일이 폴더에 들어온 시각 기준으로 정렬합니다 (이팜에서 아래로 쌓이던 문제 수정)
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

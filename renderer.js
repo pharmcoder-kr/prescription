@@ -819,6 +819,29 @@ function setupEventListeners() {
             item.classList.add('active');
         }
     });
+
+    // 저장된 조제기 이름/약품코드 인라인 편집 저장
+    const commitSavedListEdit = async (target) => {
+        if (target.classList.contains('saved-nickname-input')) {
+            await commitSavedNicknameEdit(target);
+        } else if (target.classList.contains('saved-pillcode-input')) {
+            await commitSavedPillCodeEdit(target);
+        }
+    };
+    elements.savedList.addEventListener('change', async (e) => {
+        await commitSavedListEdit(e.target);
+    });
+    elements.savedList.addEventListener('keydown', async (e) => {
+        if (!e.target.classList.contains('saved-nickname-input')
+            && !e.target.classList.contains('saved-pillcode-input')) return;
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            e.target.blur();
+        }
+    });
+    elements.savedList.addEventListener('focusout', async (e) => {
+        await commitSavedListEdit(e.target);
+    });
     
     // 연결된 기기 테이블 행 클릭 이벤트
     elements.connectedTableBody.addEventListener('click', (e) => {
@@ -1806,14 +1829,128 @@ async function saveConnection(mac, ip) {
 
 // 저장된 연결 목록 업데이트
 function updateSavedList() {
+    const prevActiveMac = document.querySelector('#savedList .list-group-item.active')?.dataset?.mac;
     elements.savedList.innerHTML = '';
     Object.entries(savedConnections).forEach(([mac, info]) => {
         const item = document.createElement('div');
         item.className = 'list-group-item';
-        item.textContent = info.nickname;
         item.dataset.mac = mac;
+        const nickname = info.nickname || '';
+        const pillCode = info.pill_code || '';
+        const ip = info.ip || '-';
+        item.innerHTML = `
+            <div class="d-flex align-items-center gap-2">
+                <input type="text" class="form-control form-control-sm saved-nickname-input"
+                       style="flex: 1 1 auto; min-width: 0;"
+                       value="${escapeHtmlAttr(nickname)}" placeholder="약품명(별칭)"
+                       data-mac="${escapeHtmlAttr(mac)}" data-original="${escapeHtmlAttr(nickname)}">
+                <input type="text" class="form-control form-control-sm saved-pillcode-input"
+                       style="flex: 0 0 9rem; width: 9rem;"
+                       value="${escapeHtmlAttr(pillCode)}" placeholder="약품코드"
+                       data-mac="${escapeHtmlAttr(mac)}" data-original="${escapeHtmlAttr(pillCode)}">
+                <span class="text-muted small text-nowrap">${escapeHtml(ip)}</span>
+            </div>
+        `;
+        if (prevActiveMac && prevActiveMac === mac) {
+            item.classList.add('active');
+        }
         elements.savedList.appendChild(item);
     });
+}
+
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function escapeHtmlAttr(str) {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+}
+
+async function commitSavedNicknameEdit(inputEl) {
+    if (!inputEl || inputEl.dataset.saving === '1') return;
+    const mac = inputEl.dataset.mac;
+    if (!mac || !savedConnections[mac]) return;
+
+    const newName = (inputEl.value || '').trim();
+    const original = inputEl.dataset.original || '';
+    if (!newName) {
+        inputEl.value = original;
+        showMessage('warning', '이름은 비울 수 없습니다.');
+        return;
+    }
+    if (newName === original) return;
+
+    inputEl.dataset.saving = '1';
+    try {
+        savedConnections[mac].nickname = newName;
+        inputEl.dataset.original = newName;
+
+        if (connectedDevices[mac]) {
+            connectedDevices[mac].nickname = newName;
+            updateConnectedTable();
+        }
+        if (typeof updateMedicineColors === 'function') {
+            updateMedicineColors();
+        }
+
+        await saveConnections();
+        logMessage(`저장된 조제기 이름 변경: ${original} → ${newName} (${mac})`);
+        showMessage('info', '이름이 저장되었습니다.');
+    } catch (error) {
+        inputEl.value = original;
+        showMessage('error', `이름 저장 실패: ${error.message}`);
+    } finally {
+        inputEl.dataset.saving = '0';
+    }
+}
+
+async function commitSavedPillCodeEdit(inputEl) {
+    if (!inputEl || inputEl.dataset.saving === '1') return;
+    const mac = inputEl.dataset.mac;
+    if (!mac || !savedConnections[mac]) return;
+
+    const newCode = (inputEl.value || '').trim();
+    const original = inputEl.dataset.original || '';
+    if (!newCode) {
+        inputEl.value = original;
+        showMessage('warning', '약품코드는 비울 수 없습니다.');
+        return;
+    }
+    if (newCode === original) return;
+
+    inputEl.dataset.saving = '1';
+    try {
+        savedConnections[mac].pill_code = newCode;
+        inputEl.dataset.original = newCode;
+
+        if (connectedDevices[mac]) {
+            connectedDevices[mac].pill_code = newCode;
+            updateConnectedTable();
+        }
+
+        await saveConnections();
+
+        // 등록 여부(체크 가능/불가)는 약물 목록을 그릴 때 결정되므로 선택된 환자 목록을 다시 그림
+        const selectedPatient = document.querySelector('#patientTableBody tr.table-primary');
+        const receiptNumber = selectedPatient?.dataset?.receiptNumber;
+        if (receiptNumber && !isAutoDispensingInProgress) {
+            loadPatientMedicines(receiptNumber);
+        } else if (typeof updateMedicineColors === 'function') {
+            updateMedicineColors();
+        }
+
+        logMessage(`저장된 조제기 약품코드 변경: ${original || '-'} → ${newCode} (${savedConnections[mac].nickname || mac})`);
+        showMessage('info', '약품코드가 저장되었습니다.');
+    } catch (error) {
+        inputEl.value = original;
+        showMessage('error', `약품코드 저장 실패: ${error.message}`);
+    } finally {
+        inputEl.dataset.saving = '0';
+    }
 }
 
 // 기기 연결
@@ -2087,29 +2224,37 @@ function getRegisteredMedicineName(pillCode) {
     return (device && device.nickname) ? device.nickname : '';
 }
 
-/** 이팜 문자 1회량: b=0.5, c=0.75, y=0.3333, z=0.6667 (그 외 알파벳은 용량 미지원) */
+/**
+ * 이팜(JVM 구형서식) 문자 1회량 - 소문자만, 정수 제외 0.25 단위
+ * a-c: 0.25~0.75, d-f: 1.25~1.75, g-i: 2.25~2.75, … v-x: 7.25~7.75
+ * y=1/3, z=2/3. 대문자는 의미 미확인이라 매핑하지 않음(알약 취급)
+ */
 const EPHARM_LETTER_DOSE_ML = {
-    b: 0.5,
-    c: 0.75,
+    a: 0.25, b: 0.5, c: 0.75,
+    d: 1.25, e: 1.5, f: 1.75,
+    g: 2.25, h: 2.5, i: 2.75,
+    j: 3.25, k: 3.5, l: 3.75,
+    m: 4.25, n: 4.5, o: 4.75,
+    p: 5.25, q: 5.5, r: 5.75,
+    s: 6.25, t: 6.5, u: 6.75,
+    v: 7.25, w: 7.5, x: 7.75,
     y: 0.3333,
     z: 0.6667
 };
 
-/** 이팜 투약량 문자: 0 / 1-9(mL) / 매핑된 알파벳 소수 mL */
+/** 이팜 투약량 문자: 0 / 1-9(mL) / 매핑된 소문자 알파벳 소수 mL */
 function parseEpharmDoseChar(ch) {
     if (!ch || ch === '0') return 0;
     if (ch >= '1' && ch <= '9') return parseInt(ch, 10);
-    const key = String(ch).toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, key)) {
-        return EPHARM_LETTER_DOSE_ML[key];
+    if (Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, ch)) {
+        return EPHARM_LETTER_DOSE_ML[ch];
     }
     return NaN;
 }
 
 function isEpharmUnmappedLetterDoseChar(ch) {
     if (!/[a-zA-Z]/.test(String(ch || ''))) return false;
-    const key = String(ch).toLowerCase();
-    return !Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, key);
+    return !Object.prototype.hasOwnProperty.call(EPHARM_LETTER_DOSE_ML, ch);
 }
 
 /**
@@ -2117,7 +2262,8 @@ function isEpharmUnmappedLetterDoseChar(ch) {
  * 예) 101000005 → 아침1 점심0 저녁1, 5일 → 1회량1, 횟수2, 일수5, 총량10
  * 예) bbb000005 → 0.5×3×5 = 7.5
  * 예) yyy000004 → 0.3333×3×4
- * 예) 매핑 없는 알파벳만 알약 취급 → 1회량·총량 '-'
+ * 예) h0h000003 → 2.5×2×3 = 15
+ * 예) 매핑 없는 알파벳(대문자 등)만 알약 취급 → 1회량·총량 '-'
  */
 function parseEpharmDoseField(doseRaw) {
     const raw = String(doseRaw || '').trim();
@@ -2958,12 +3104,39 @@ function parsePrescriptionFile(filePath) {
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
         }
+
+        const parsedEntry = parsedPrescriptions[receiptNumber];
+        if (parsedEntry && parsedEntry.patient) {
+            parsedEntry.patient.file_time_ms = getPrescriptionFileTimeMs(filePath);
+        }
         
         // 처방연동조제 트리거는 처방전 모니터링에서 처리하도록 변경
         // 여기서는 즉시 startDispensing을 호출하지 않음
     } catch (error) {
         logMessage(`파일 처방전연동 중 오류: ${error.message}`);
     }
+}
+
+/** 처방 파일이 폴더에 들어온 시각 (같은 이름으로 덮어쓴 경우 수정시각이 더 최신) */
+function getPrescriptionFileTimeMs(filePath) {
+    try {
+        const stats = fs.statSync(filePath);
+        const birth = stats.birthtime ? stats.birthtime.getTime() : 0;
+        const modified = stats.mtime ? stats.mtime.getTime() : 0;
+        return Math.max(birth, modified);
+    } catch (_) {
+        return 0;
+    }
+}
+
+/**
+ * 최근에 들어온 처방이 위로: 파일 도착시각 내림차순.
+ * 본문 접수시각(이팜은 분 단위·발행시각일 수 있음)은 도착 순서와 다를 수 있어 보조 기준으로만 사용
+ */
+function comparePrescriptionsNewestFirst(a, b) {
+    const byFile = (b.patient.file_time_ms || 0) - (a.patient.file_time_ms || 0);
+    if (byFile !== 0) return byFile;
+    return String(b.patient.receipt_time || '').localeCompare(String(a.patient.receipt_time || ''));
 }
 
 // 환자 필터링
@@ -2980,10 +3153,7 @@ function filterPatientsByDate() {
     // 해당 날짜의 처방전들을 최신 순으로 정렬
     const prescriptionsForDate = Object.values(parsedPrescriptions)
         .filter(prescription => prescription.patient.receipt_date === selectedDate)
-        .sort((a, b) => {
-            // receipt_time을 기준으로 내림차순 정렬 (최신이 위로)
-            return b.patient.receipt_time.localeCompare(a.patient.receipt_time);
-        });
+        .sort(comparePrescriptionsNewestFirst);
     
     let foundCount = 0;
     prescriptionsForDate.forEach(prescription => {
@@ -3084,6 +3254,10 @@ function loadPatientMedicines(receiptNumber) {
             if (!isRegistered) {
                 savedStatus = '등록되지 않은 약물';
                 medicineTransmissionStatus[key] = savedStatus;
+            } else if (savedStatus === '등록되지 않은 약물') {
+                // 이후 조제기 약품코드가 등록/수정된 경우
+                delete medicineTransmissionStatus[key];
+                savedStatus = undefined;
             }
             
             let statusBadge = '<span class="badge bg-secondary">0</span>';
@@ -4493,10 +4667,7 @@ function showAllPatients() {
     
     // 모든 처방전을 최신 순으로 정렬
     const sortedPrescriptions = Object.values(parsedPrescriptions)
-        .sort((a, b) => {
-            // receipt_time을 기준으로 내림차순 정렬 (최신이 위로)
-            return b.patient.receipt_time.localeCompare(a.patient.receipt_time);
-        });
+        .sort(comparePrescriptionsNewestFirst);
     
     sortedPrescriptions.forEach(prescription => {
         const row = document.createElement('tr');
