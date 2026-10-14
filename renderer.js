@@ -2225,9 +2225,9 @@ function getRegisteredMedicineName(pillCode) {
 }
 
 /**
- * 이팜(JVM 구형서식) 문자 1회량 - 소문자만, 정수 제외 0.25 단위
- * a-c: 0.25~0.75, d-f: 1.25~1.75, g-i: 2.25~2.75, … v-x: 7.25~7.75
- * y=1/3, z=2/3. 대문자는 의미 미확인이라 매핑하지 않음(알약 취급)
+ * 이팜(JVM 구형서식) 문자 1회량 (mL)
+ * 소문자: 정수 제외 0.25 단위 - a-c: 0.25~0.75, d-f: 1.25~1.75, … v-x: 7.25~7.75, y=1/3, z=2/3
+ * 대문자: 10 이상 정수 - A=10, B=11, … Z=35
  */
 const EPHARM_LETTER_DOSE_ML = {
     a: 0.25, b: 0.5, c: 0.75,
@@ -2241,8 +2241,11 @@ const EPHARM_LETTER_DOSE_ML = {
     y: 0.3333,
     z: 0.6667
 };
+for (let i = 0; i < 26; i++) {
+    EPHARM_LETTER_DOSE_ML[String.fromCharCode(65 + i)] = 10 + i;
+}
 
-/** 이팜 투약량 문자: 0 / 1-9(mL) / 매핑된 소문자 알파벳 소수 mL */
+/** 이팜 투약량 문자: 0 / 1-9(mL) / 소문자(소수 mL) / 대문자(10~35mL) */
 function parseEpharmDoseChar(ch) {
     if (!ch || ch === '0') return 0;
     if (ch >= '1' && ch <= '9') return parseInt(ch, 10);
@@ -2263,7 +2266,8 @@ function isEpharmUnmappedLetterDoseChar(ch) {
  * 예) bbb000005 → 0.5×3×5 = 7.5
  * 예) yyy000004 → 0.3333×3×4
  * 예) h0h000003 → 2.5×2×3 = 15
- * 예) 매핑 없는 알파벳(대문자 등)만 알약 취급 → 1회량·총량 '-'
+ * 예) A00000001 → 10×1×1 = 10
+ * 예) 매핑 없는 문자는 알약 취급 → 1회량·총량 '-'
  */
 function parseEpharmDoseField(doseRaw) {
     const raw = String(doseRaw || '').trim();
