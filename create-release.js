@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.53';
+const VERSION = '1.3.54';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - JVP 양식 소수점 1회량 처방 파싱 지원`;
+const RELEASE_TITLE = `v${VERSION} - JVP 용량 해석 규칙 정정 (처방일수·횟수·1회량 순서)`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,15 +16,15 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: JVP 양식 소수점 1회량 처방 파싱 지원
+  const releaseNotes = `## v${VERSION}: JVP 용량 해석 규칙 정정
 
 ### 주요 변경사항
-- **소수점 1회량 처방 파싱**: JVP 양식에서 소수점이 포함된 용량도 올바르게 파싱합니다
-  - 해석 규칙: 혼자 떨어진 숫자 = 처방일수, 다음 숫자의 첫자리 = 1일 복용횟수, 그 뒤에 붙은 숫자 = 1회 복용량
-  - 예) \`5  25.5\` → 1회량 5.5 / 1일 2회 / 5일, \`5  26.5\` → 6.5 / 2회 / 5일
-  - 예) \`3  31.25\` → 1회량 1.25 / 1일 3회 / 3일, \`6  37.5\` → 7.5 / 3회 / 6일
-  - 이전 버전에서는 소수점이 있으면 해당 약품이 파싱되지 않았습니다
-- 기존 정수형 해석(\`5  35\` → 5/3/5, \`11 3123\` → 11/3/123 등)은 그대로 유지됩니다
+- **JVP 용량 필드 순서 정정**: 정수·소수 처방 모두 동일한 규칙으로 해석합니다
+  - 혼자 떨어진 숫자 = 처방일수, 다음 숫자의 첫자리 = 1일 복용횟수, 그 뒤에 붙은 숫자 = 1회 복용량
+  - 정수 예) \`3  21\` → 1회량 1 / 2회 / 3일, \`6  54\` → 4 / 5회 / 6일, \`9  87\` → 7 / 8회 / 9일
+  - 소수 예) \`3  21.5\` → 1회량 1.5 / 2회 / 3일, \`9  87.5\` → 7.5 / 8회 / 9일, \`5  25.5\` → 5.5 / 2회 / 5일
+  - 공백 없이 붙은 형태(\`123315\`)도 같은 순서(123일 / 3회 / 1회량 15)로 해석합니다
+- 1회량과 처방일수 표시가 바로잡힙니다. 총량(1회량×횟수×일수)은 기존과 동일합니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
