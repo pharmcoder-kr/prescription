@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.52';
+const VERSION = '1.3.53';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - PM3000/팜플러스20 JVP 양식(|JVPHEAD|) 처방전 추가 지원`;
+const RELEASE_TITLE = `v${VERSION} - JVP 양식 소수점 1회량 처방 파싱 지원`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,15 +16,15 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: PM3000/팜플러스20 JVP 양식 처방전 추가 지원
+  const releaseNotes = `## v${VERSION}: JVP 양식 소수점 1회량 처방 파싱 지원
 
 ### 주요 변경사항
-- **JVP 고정폭 양식 자동 인식**: PM3000/팜플러스20 모드에서 파일 내용에 \`|JVPHEAD|\`/\`|JVMHEAD|\` 마커가 있는 처방전도 자동으로 파싱합니다 (기존 백슬래시 양식은 그대로 동작)
-  - 환자명, 접수시간(예: 20261020 17:45), 만나이, 생년월일, 요양기관번호, 의사번호 인식
-  - 약품코드: 앞 알파벳(E/T 등)을 제외한 9자리 숫자 (예: E645702251 → 645702251)
-  - 1회복용량/1일 복용횟수/처방일수: 고정 컬럼으로 해석 (1회량 앞 3칸, 횟수 1자리, 나머지는 일수)
-    - 예) \`5  35\` → 5 / 3 / 5, \`11 3123\` → 11 / 3 / 123, \`123315\` → 123 / 3 / 15
-- 파싱 결과는 기존과 동일하게 환자 목록·약품 테이블(1회량/횟수/일수/총량)에 표시됩니다
+- **소수점 1회량 처방 파싱**: JVP 양식에서 소수점이 포함된 용량도 올바르게 파싱합니다
+  - 해석 규칙: 혼자 떨어진 숫자 = 처방일수, 다음 숫자의 첫자리 = 1일 복용횟수, 그 뒤에 붙은 숫자 = 1회 복용량
+  - 예) \`5  25.5\` → 1회량 5.5 / 1일 2회 / 5일, \`5  26.5\` → 6.5 / 2회 / 5일
+  - 예) \`3  31.25\` → 1회량 1.25 / 1일 3회 / 3일, \`6  37.5\` → 7.5 / 3회 / 6일
+  - 이전 버전에서는 소수점이 있으면 해당 약품이 파싱되지 않았습니다
+- 기존 정수형 해석(\`5  35\` → 5/3/5, \`11 3123\` → 11/3/123 등)은 그대로 유지됩니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

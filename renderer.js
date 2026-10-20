@@ -2413,50 +2413,113 @@ function isJvpPrescriptionContent(content) {
 }
 
 /**
- * JVP 약품 용량 컬럼 해석 (약품 1건 고정폭 기준)
- * - 1회복용량: 용량필드 앞 3칸 (예: "5  ", "11 ", "123")
- * - 1일 복용횟수: 다음 1칸 (무조건 1자리)
- * - 처방일수: 그 뒤 나머지 숫자
- * 예) "5  35" → 5 / 3 / 5, "11 3123" → 11 / 3 / 123, "123315" → 123 / 3 / 15
+ * JVP 용량 문자열 해석
+ *
+ * 정수형 (기존): "5  35" → 1회량 5 / 1일 3회 / 5일, "11 3123" → 11 / 3 / 123
+ *   - 앞에 떨어진 숫자 = 1회량, 뒤 숫자는 첫자리=횟수, 나머지=처방일수
+ * 소수형 (추가): "5  25.5" → 1회량 5.5 / 1일 2회 / 5일
+ *   - 혼자 떨어진 숫자 = 처방일수, 다음 숫자의 첫자리 = 1일 복용횟수,
+ *     그 뒤에 붙은 숫자(소수 포함) = 1회 복용량
+ *   - 예) "5  26.5" → 6.5 / 2회 / 5일, "3  31.25" → 1.25 / 3회 / 3일,
+ *         "6  37.5" → 7.5 / 3회 / 6일
+ * 공백 없이 붙은 정수형 "123315"는 고정 컬럼(1회량 3칸+횟수 1자리+일수)으로 해석
  */
-function parseJvpDoseColumns(doseRaw) {
-    if (!doseRaw) return null;
-    const field = String(doseRaw).padEnd(16, ' ');
-    if (!/^[\d ]+$/.test(field.slice(0, 10))) return null;
+function parseJvpDoseText(doseText) {
+    const text = String(doseText || '').trim();
+    if (!text || !/^[\d.\s]+$/.test(text)) return null;
+    const tokens = text.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return null;
+
+    const valid = (volume, daily, period) =>
+        volume > 0 && daily >= 1 && daily <= 9 && Number.isInteger(period) && period >= 1;
+
+    if (tokens.length >= 2) {
+        const first = tokens[0];
+        const second = tokens[1];
+
+        // 소수형 A: [처방일수] [횟수+1회량(소수)]  예) 5 25.5 / 3 31.25 / 6 37.5
+        if (second.includes('.') && !first.includes('.')) {
+            // 토큰이 3개로 나뉜 경우(5 / 2 / 5.5)도 허용
+            if (tokens.length >= 3 && /^[1-9]$/.test(second) && tokens[2].includes('.')) {
+                const period = parseInt(first, 10) || 0;
+                const daily = parseInt(second, 10) || 0;
+                const volume = parseDoseNumber(tokens[2]);
+                return valid(volume, daily, period) ? { volume, daily, period } : null;
+            }
+            const period = parseInt(first, 10) || 0;
+            const daily = parseInt(second.charAt(0), 10) || 0;
+            const volume = parseDoseNumber(second.slice(1));
+            return valid(volume, daily, period) ? { volume, daily, period } : null;
+        }
+
+        // 소수형 B: [1회량(소수)] [횟수+처방일수] 또는 [1회량] [횟수] [처방일수]
+        if (first.includes('.')) {
+            const volume = parseDoseNumber(first);
+            const daily = parseInt(second.charAt(0), 10) || 0;
+            const period = tokens.length >= 3
+                ? (parseInt(tokens[2], 10) || 0)
+                : (parseInt(second.slice(1), 10) || 0);
+            return valid(volume, daily, period) ? { volume, daily, period } : null;
+        }
+
+        // 토큰 3개 정수형: [1회량] [횟수 1자리] [처방일수]
+        if (tokens.length >= 3 && /^[1-9]$/.test(second)) {
+            const volume = parseDoseNumber(first);
+            const daily = parseInt(second, 10) || 0;
+            const period = parseInt(tokens[2], 10) || 0;
+            return valid(volume, daily, period) ? { volume, daily, period } : null;
+        }
+
+        // 정수형: [1회량] [횟수+처방일수]
+        const tail = tokens.slice(1).join('');
+        const volume = parseDoseNumber(first);
+        const daily = parseInt(tail.charAt(0), 10) || 0;
+        const period = parseInt(tail.slice(1), 10) || 0;
+        return valid(volume, daily, period) ? { volume, daily, period } : null;
+    }
+
+    // 토큰 1개
+    const token = tokens[0];
+    if (token.includes('.')) {
+        // [1회량(소수)+횟수+일수] 예) 5.525 → 5.5 / 2 / 5
+        let m = token.match(/^(\d+\.\d+)([1-9])(\d+)$/);
+        if (m) {
+            const volume = parseDoseNumber(m[1]);
+            const daily = parseInt(m[2], 10);
+            const period = parseInt(m[3], 10);
+            return valid(volume, daily, period) ? { volume, daily, period } : null;
+        }
+        // [일수+횟수+1회량(소수)] 예) 525.5 → 5일 / 2 / 5.5
+        m = token.match(/^(\d+)([1-9])(\d+\.\d+)$/);
+        if (m) {
+            const period = parseInt(m[1], 10);
+            const daily = parseInt(m[2], 10);
+            const volume = parseDoseNumber(m[3]);
+            return valid(volume, daily, period) ? { volume, daily, period } : null;
+        }
+        return null;
+    }
+
+    // 공백 없는 정수형은 고정 컬럼: 1회량 앞 3칸, 횟수 1자리, 나머지 일수
+    const field = token.padEnd(5, ' ');
     const volume = parseDoseNumber(field.slice(0, 3).trim());
-    const dailyText = field.charAt(3);
+    const daily = parseInt(field.charAt(3), 10) || 0;
     const period = parseInt(field.slice(4).trim(), 10) || 0;
-    if (!/^\d$/.test(dailyText)) return null;
-    const daily = parseInt(dailyText, 10);
-    if (!(volume > 0) || daily < 1 || daily > 9 || period < 1) return null;
-    return { volume, daily, period };
+    return valid(volume, daily, period) ? { volume, daily, period } : null;
 }
 
-/** 고정폭 바이트 해석이 안 될 때의 보조 해석 (공백 토큰 기준) */
+function parseJvpDoseColumns(doseRaw) {
+    if (!doseRaw) return null;
+    if (!/^[\d.\s]+$/.test(String(doseRaw))) return null;
+    return parseJvpDoseText(doseRaw);
+}
+
+/** 고정폭 바이트 해석이 안 될 때의 보조 해석 (공백 토큰 기준, 소수 포함) */
 function parseJvpDoseFallback(segmentAfterCode) {
     const trimmed = String(segmentAfterCode || '').trim();
-    const doseMatch = trimmed.match(/(\d[\d ]*)$/);
+    const doseMatch = trimmed.match(/(\d[\d .]*)$/);
     if (!doseMatch) return null;
-    const tokens = doseMatch[1].trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return null;
-    let volume = 0;
-    let daily = 0;
-    let period = 0;
-    if (tokens.length >= 2) {
-        volume = parseDoseNumber(tokens[0]);
-        const tail = tokens.slice(1).join('');
-        daily = parseInt(tail.charAt(0), 10) || 0;
-        period = parseInt(tail.slice(1), 10) || 0;
-    } else {
-        const digits = tokens[0];
-        if (digits.length < 3) return null;
-        const volumeDigits = digits.length >= 5 ? 3 : digits.length - 2;
-        volume = parseDoseNumber(digits.slice(0, volumeDigits));
-        daily = parseInt(digits.charAt(volumeDigits), 10) || 0;
-        period = parseInt(digits.slice(volumeDigits + 1), 10) || 0;
-    }
-    if (!(volume > 0) || daily < 1 || daily > 9 || period < 1) return null;
-    return { volume, daily, period };
+    return parseJvpDoseText(doseMatch[1]);
 }
 
 /** JVP 고정폭 TXT → 환자/약물 구조 (기존 PM3000 UI 구조와 동일하게 반환) */
@@ -2549,7 +2612,7 @@ function parseJvpPrescriptionContent(content, filePath, receiptNumber) {
             const segmentBytes = iconv.encode(segment, 'cp949');
             if (segmentBytes.length >= 80) {
                 pillName = iconv.decode(segmentBytes.slice(16, 76), 'cp949').trim();
-                const doseRaw = segmentBytes.slice(76, 92).toString('ascii');
+                const doseRaw = segmentBytes.slice(76).toString('ascii');
                 dose = parseJvpDoseColumns(doseRaw);
             }
         } catch (_) {
@@ -2562,7 +2625,7 @@ function parseJvpPrescriptionContent(content, filePath, receiptNumber) {
             dose = parseJvpDoseFallback(afterCode);
             if (!pillName) {
                 const trimmed = afterCode.trim();
-                const doseMatch = trimmed.match(/(\d[\d ]*)$/);
+                const doseMatch = trimmed.match(/(\d[\d .]*)$/);
                 pillName = doseMatch ? trimmed.slice(0, doseMatch.index).trim() : trimmed;
             }
         }
