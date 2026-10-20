@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.51';
+const VERSION = '1.3.52';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 이팜 대문자 1회량(A~Z = 10~35mL) 지원`;
+const RELEASE_TITLE = `v${VERSION} - PM3000/팜플러스20 JVP 양식(|JVPHEAD|) 처방전 추가 지원`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,13 +16,15 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 이팜 대문자 1회량(A~Z = 10~35mL) 지원
+  const releaseNotes = `## v${VERSION}: PM3000/팜플러스20 JVP 양식 처방전 추가 지원
 
 ### 주요 변경사항
-- **이팜 대문자 1회량 인식**: 대문자 A~Z를 10~35mL로 인식합니다
-  - A=10, B=11, C=12 … K=20 … Z=35
-  - 이전에는 대문자가 들어오면 1회량·총량이 '-'로 표시되었습니다
-- 소문자(a~x: 0.25mL 단위, y=1/3, z=2/3)와 숫자(1~9mL) 해석은 기존과 같습니다
+- **JVP 고정폭 양식 자동 인식**: PM3000/팜플러스20 모드에서 파일 내용에 \`|JVPHEAD|\`/\`|JVMHEAD|\` 마커가 있는 처방전도 자동으로 파싱합니다 (기존 백슬래시 양식은 그대로 동작)
+  - 환자명, 접수시간(예: 20261020 17:45), 만나이, 생년월일, 요양기관번호, 의사번호 인식
+  - 약품코드: 앞 알파벳(E/T 등)을 제외한 9자리 숫자 (예: E645702251 → 645702251)
+  - 1회복용량/1일 복용횟수/처방일수: 고정 컬럼으로 해석 (1회량 앞 3칸, 횟수 1자리, 나머지는 일수)
+    - 예) \`5  35\` → 5 / 3 / 5, \`11 3123\` → 11 / 3 / 123, \`123315\` → 123 / 3 / 15
+- 파싱 결과는 기존과 동일하게 환자 목록·약품 테이블(1회량/횟수/일수/총량)에 표시됩니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

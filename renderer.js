@@ -2404,6 +2404,209 @@ function parseEpharmPrescriptionContent(content, filePath, receiptNumber) {
     };
 }
 
+/** JVP(|JVPHEAD|/|JVMHEAD|) 양식 여부 (PM3000/팜플러스20의 추가 양식) */
+function isJvpPrescriptionContent(content) {
+    return typeof content === 'string'
+        && content.includes('|JVPHEAD|')
+        && content.includes('|JVMHEAD|')
+        && content.includes('|JVMEND|');
+}
+
+/**
+ * JVP 약품 용량 컬럼 해석 (약품 1건 고정폭 기준)
+ * - 1회복용량: 용량필드 앞 3칸 (예: "5  ", "11 ", "123")
+ * - 1일 복용횟수: 다음 1칸 (무조건 1자리)
+ * - 처방일수: 그 뒤 나머지 숫자
+ * 예) "5  35" → 5 / 3 / 5, "11 3123" → 11 / 3 / 123, "123315" → 123 / 3 / 15
+ */
+function parseJvpDoseColumns(doseRaw) {
+    if (!doseRaw) return null;
+    const field = String(doseRaw).padEnd(16, ' ');
+    if (!/^[\d ]+$/.test(field.slice(0, 10))) return null;
+    const volume = parseDoseNumber(field.slice(0, 3).trim());
+    const dailyText = field.charAt(3);
+    const period = parseInt(field.slice(4).trim(), 10) || 0;
+    if (!/^\d$/.test(dailyText)) return null;
+    const daily = parseInt(dailyText, 10);
+    if (!(volume > 0) || daily < 1 || daily > 9 || period < 1) return null;
+    return { volume, daily, period };
+}
+
+/** 고정폭 바이트 해석이 안 될 때의 보조 해석 (공백 토큰 기준) */
+function parseJvpDoseFallback(segmentAfterCode) {
+    const trimmed = String(segmentAfterCode || '').trim();
+    const doseMatch = trimmed.match(/(\d[\d ]*)$/);
+    if (!doseMatch) return null;
+    const tokens = doseMatch[1].trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return null;
+    let volume = 0;
+    let daily = 0;
+    let period = 0;
+    if (tokens.length >= 2) {
+        volume = parseDoseNumber(tokens[0]);
+        const tail = tokens.slice(1).join('');
+        daily = parseInt(tail.charAt(0), 10) || 0;
+        period = parseInt(tail.slice(1), 10) || 0;
+    } else {
+        const digits = tokens[0];
+        if (digits.length < 3) return null;
+        const volumeDigits = digits.length >= 5 ? 3 : digits.length - 2;
+        volume = parseDoseNumber(digits.slice(0, volumeDigits));
+        daily = parseInt(digits.charAt(volumeDigits), 10) || 0;
+        period = parseInt(digits.slice(volumeDigits + 1), 10) || 0;
+    }
+    if (!(volume > 0) || daily < 1 || daily > 9 || period < 1) return null;
+    return { volume, daily, period };
+}
+
+/** JVP 고정폭 TXT → 환자/약물 구조 (기존 PM3000 UI 구조와 동일하게 반환) */
+function parseJvpPrescriptionContent(content, filePath, receiptNumber) {
+    const text = String(content || '');
+    const headStart = text.indexOf('|JVPHEAD|');
+    const headEnd = text.indexOf('|JVPEND|');
+    const bodyStart = text.indexOf('|JVMHEAD|');
+    const bodyEnd = text.indexOf('|JVMEND|');
+    if (headStart < 0 || headEnd < 0 || bodyStart < 0 || bodyEnd < 0) {
+        return null;
+    }
+
+    const headerText = text.slice(headStart + '|JVPHEAD|'.length, headEnd);
+    const bodyText = text.slice(bodyStart + '|JVMHEAD|'.length, bodyEnd);
+
+    // 헤더는 공백 토큰 순서로 해석한다.
+    // [0]형식코드 [1]순번 [2]만나이 [3]접수일시+주민등록번호(붙어 있음) [4]생년월일
+    // [5]환자명 [6]구분 [7]요양기관번호 [8]의사번호
+    const tokens = headerText.trim().split(/\s+/).filter(Boolean);
+    const age = tokens.length > 2 ? (parseInt(tokens[2], 10) || null) : null;
+
+    let receiptDate = '';
+    let receiptTime = '';
+    let residentNumber = '';
+    const dateTimeMatch = tokens.length > 3
+        ? tokens[3].match(/^(\d{4})(\d{2})(\d{2})(\d{2}):(\d{2})(\d*)$/)
+        : null;
+    if (dateTimeMatch) {
+        receiptDate = `${dateTimeMatch[1]}-${dateTimeMatch[2]}-${dateTimeMatch[3]}`;
+        receiptTime = `${receiptDate} ${dateTimeMatch[4]}:${dateTimeMatch[5]}:00`;
+        residentNumber = dateTimeMatch[6] || '';
+    }
+
+    let birthDate = '';
+    if (tokens.length > 4 && /^\d{8}$/.test(tokens[4])) {
+        birthDate = `${tokens[4].slice(0, 4)}-${tokens[4].slice(4, 6)}-${tokens[4].slice(6, 8)}`;
+    }
+
+    const patientName = tokens.length > 5 ? tokens[5] : '';
+    const institutionNumber = tokens.length > 7 ? tokens[7] : '';
+    const doctorCode = tokens.length > 8 ? tokens[8] : '';
+
+    // 날짜 필터는 기존 양식과 동일하게 파일명 YYYYMMDD를 우선한다.
+    const fileDateMatch = String(receiptNumber || '').match(/^(\d{4})(\d{2})(\d{2})/);
+    if (fileDateMatch) {
+        const fileDate = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
+        if (!receiptDate) {
+            receiptDate = fileDate;
+        }
+        if (receiptTime && receiptDate) {
+            receiptTime = `${fileDate} ${receiptTime.slice(11)}`;
+        }
+        receiptDate = fileDate;
+    }
+
+    if (!receiptTime) {
+        if (receiptDate) {
+            receiptTime = `${receiptDate} 00:00:00`;
+        } else {
+            try {
+                const stats = fs.statSync(filePath);
+                receiptTime = moment(stats.birthtime.getTime() > 0 ? stats.birthtime : undefined).format('YYYY-MM-DD HH:mm:ss');
+            } catch (_) {
+                receiptTime = moment().format('YYYY-MM-DD HH:mm:ss');
+            }
+            receiptDate = receiptTime.slice(0, 10);
+        }
+    }
+
+    const medicines = [];
+    const codeRe = /[A-Z]\d{9}/g;
+    const codeMatches = [];
+    let codeMatch;
+    while ((codeMatch = codeRe.exec(bodyText)) !== null) {
+        codeMatches.push({ code: codeMatch[0], index: codeMatch.index });
+    }
+
+    codeMatches.forEach((item, index) => {
+        const segmentEnd = index + 1 < codeMatches.length ? codeMatches[index + 1].index : bodyText.length;
+        const segment = bodyText.slice(item.index, segmentEnd);
+        // 앞자리 알파벳(E/T 등)을 제외한 9자리가 약품코드
+        const pillCode = item.code.slice(1);
+
+        let pillName = '';
+        let dose = null;
+
+        // 1차: CP949 고정폭 바이트 기준 (코드10 + 공백6 + 약품명60 + 용량필드)
+        try {
+            const segmentBytes = iconv.encode(segment, 'cp949');
+            if (segmentBytes.length >= 80) {
+                pillName = iconv.decode(segmentBytes.slice(16, 76), 'cp949').trim();
+                const doseRaw = segmentBytes.slice(76, 92).toString('ascii');
+                dose = parseJvpDoseColumns(doseRaw);
+            }
+        } catch (_) {
+            dose = null;
+        }
+
+        // 2차: 바이트 해석 실패 시 문자열 토큰 기준 보조 해석
+        if (!dose) {
+            const afterCode = segment.slice(item.code.length);
+            dose = parseJvpDoseFallback(afterCode);
+            if (!pillName) {
+                const trimmed = afterCode.trim();
+                const doseMatch = trimmed.match(/(\d[\d ]*)$/);
+                pillName = doseMatch ? trimmed.slice(0, doseMatch.index).trim() : trimmed;
+            }
+        }
+
+        if (!dose || !pillName) {
+            logMessage(`JVP 약물 파싱 실패: 코드 ${pillCode} (약품명/용량 확인 필요)`);
+            return;
+        }
+
+        medicines.push({
+            pill_code: pillCode,
+            pill_name: pillName,
+            volume: dose.volume,
+            daily: dose.daily,
+            period: dose.period,
+            total: calcPrescriptionTotalMl(dose.volume, dose.daily, dose.period),
+            date: receiptDate,
+            line_number: index + 1
+        });
+    });
+
+    if (!patientName && medicines.length === 0) {
+        return null;
+    }
+
+    return {
+        patient: {
+            name: patientName || '(이름 없음)',
+            receipt_time: receiptTime,
+            receipt_date: receiptDate,
+            receipt_number: receiptNumber,
+            parsed_at: moment().format('YYYY-MM-DD HH:mm:ss'),
+            // JVP 헤더 부가 정보 (기존 UI 표시는 name/receipt_time/receipt_number 사용)
+            age: age,
+            birth_date: birthDate,
+            resident_number: residentNumber,
+            institution_number: institutionNumber,
+            doctor_code: doctorCode,
+            source_format: 'jvp'
+        },
+        medicines
+    };
+}
+
 function listPrescriptionFilesInPath() {
     if (!prescriptionPath || !fs.existsSync(prescriptionPath)) return [];
     const ext = getPrescriptionFileExtension();
@@ -2834,6 +3037,20 @@ function parsePrescriptionFileWithoutEvent(filePath) {
     try {
         const buffer = fs.readFileSync(filePath);
         const { content } = decodeKoreanPrescriptionText(buffer);
+
+        // JVP 양식은 한 줄 고정폭이라 기존 백슬래시 라인 파싱보다 먼저 처리
+        if (isJvpPrescriptionContent(content)) {
+            const jvpReceiptNumber = path.basename(filePath, path.extname(filePath));
+            const parsed = parseJvpPrescriptionContent(content, filePath, jvpReceiptNumber);
+            if (!parsed) {
+                console.log(`❌ JVP 파싱 실패: ${path.basename(filePath)}`);
+                return;
+            }
+            parsedPrescriptions[jvpReceiptNumber] = parsed;
+            console.log(`✅ JVP parsedPrescriptions에 추가: ${jvpReceiptNumber} (약물 ${parsed.medicines.length}건)`);
+            return;
+        }
+
         const lines = content.split(/\r?\n/);
         
         console.log(`📄 파일 라인 수: ${lines.length}`);
@@ -2944,6 +3161,22 @@ function parsePrescriptionFile(filePath) {
             const content = decoded.content;
             console.log(`🔤 TXT 디코딩: ${path.basename(filePath)} → ${decoded.encoding}`);
 
+            // 추가 양식: JVP 고정폭 (|JVPHEAD|/|JVMHEAD|) — 기존 백슬래시 양식과 자동 구분
+            if (isJvpPrescriptionContent(content)) {
+                const parsed = parseJvpPrescriptionContent(content, filePath, receiptNumber);
+                if (!parsed) {
+                    logMessage(`JVP TXT 파일 처방전연동 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
+                    return;
+                }
+                if (parsed.medicines.length === 0) {
+                    logMessage(`JVP TXT 파싱 경고: 약물 없음 - ${path.basename(filePath)} (환자: ${parsed.patient.name})`);
+                } else {
+                    logMessage(`JVP TXT 파싱 완료: ${parsed.patient.name}, 약물 ${parsed.medicines.length}건`);
+                }
+                parsedPrescriptions[receiptNumber] = parsed;
+                parsedFiles.add(filePath);
+                saveParsedFiles();
+            } else {
             const lines = content.toString().split(/\r?\n/).filter(line => line.trim());
             if (lines.length === 0) return;
             
@@ -2997,7 +3230,8 @@ function parsePrescriptionFile(filePath) {
             
             parsedFiles.add(filePath);
             saveParsedFiles(); // parsedFiles 저장
-            
+            }
+
         } else if (prescriptionProgram === 'epharm') {
             // 이팜 - 고정폭 TXT 파싱 (CP949/UTF-8)
             const decoded = decodeKoreanPrescriptionText(buffer);
