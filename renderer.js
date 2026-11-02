@@ -99,6 +99,8 @@ let sentParseEvents = new Set(); // 이미 전송한 파싱 이벤트 (중복 �
 let pharmacyStatus = null; // 약국 승인 상태 (null, 'pending', 'active', 'rejected')
 let loginMode = null; // 로그인 모드 ('logged_in', 'no_login', null)
 let parseEnabled = false; // 파싱 기능 활성화 여부
+let espLogSnapshotInterval = null; // ESP 블랙박스 주기 스냅샷
+const ESP_LOG_SNAPSHOT_INTERVAL_MS = 3 * 60 * 1000; // 3분
 
 // ============================================
 // 약국 승인 상태 확인
@@ -996,6 +998,89 @@ function logMessage(message) {
     elements.logContainer.appendChild(logEntry);
     elements.logContainer.scrollTop = elements.logContainer.scrollHeight;
     console.log(`[${timestamp}] ${message}`);
+    // 당일 블랙박스 파일에도 상시 기록 (문제사항 전송용)
+    try {
+        ipcRenderer.invoke('blackbox:append-app-log', {
+            message: String(message),
+            ts: new Date().toISOString()
+        }).catch(() => {});
+    } catch (_) {
+        /* ignore */
+    }
+}
+
+/** 연결 기기의 /version 캐시 (문제사항 전송 시 기기 무응답 대비) */
+async function cacheDeviceVersionInfo(mac, ip) {
+    if (!mac || !ip || !connectedDevices[mac]) return null;
+    try {
+        const vr = await axios.get(`http://${ip}/version`, { timeout: 4000 });
+        const data = vr.data || {};
+        connectedDevices[mac].firmware_version =
+            data.version != null ? String(data.version).trim() : null;
+        connectedDevices[mac].firmware_model =
+            data.model != null ? String(data.model).trim() : null;
+        connectedDevices[mac].hmi_version =
+            data.hmi_version != null ? String(data.hmi_version).trim() : null;
+        connectedDevices[mac].versionCachedAt = Date.now();
+        return data;
+    } catch (_) {
+        return null;
+    }
+}
+
+/** 연결된 기기 ESP /logs 를 PC에 주기 스냅샷 (전원 재부팅 전 기록 보존) */
+async function snapshotEspLogsForConnectedDevices() {
+    const entries = Object.entries(connectedDevices).filter(([, d]) => d.status === '연결됨');
+    for (const [mac, d] of entries) {
+        if (dispensingDevices.has(d.ip)) continue;
+        try {
+            const today = moment().format('YYYY-MM-DD');
+            const response = await axios.get(`http://${d.ip}/logs`, {
+                params: { date: today },
+                timeout: 20000,
+                responseType: 'text',
+                transformResponse: [(data) => data]
+            });
+            const logText = typeof response.data === 'string' ? response.data : String(response.data ?? '');
+            if (!logText || logText.startsWith('(no log') || logText.startsWith('(no logs')) {
+                // date= 미지원 구펌웨어면 기본 /logs 재시도
+                const fallback = await axios.get(`http://${d.ip}/logs`, {
+                    timeout: 15000,
+                    responseType: 'text',
+                    transformResponse: [(data) => data]
+                });
+                const fb = typeof fallback.data === 'string' ? fallback.data : String(fallback.data ?? '');
+                await ipcRenderer.invoke('blackbox:save-esp-snapshot', {
+                    mac,
+                    ip: d.ip,
+                    nickname: d.nickname,
+                    logText: fb
+                });
+            } else {
+                await ipcRenderer.invoke('blackbox:save-esp-snapshot', {
+                    mac,
+                    ip: d.ip,
+                    nickname: d.nickname,
+                    logText
+                });
+            }
+            await cacheDeviceVersionInfo(mac, d.ip);
+        } catch (e) {
+            // 조용히 실패 — 다음 주기에 재시도
+            console.warn(`[blackbox] ESP 스냅샷 실패 ${d.ip}:`, e.message);
+        }
+    }
+}
+
+function startEspLogSnapshotLoop() {
+    if (espLogSnapshotInterval) clearInterval(espLogSnapshotInterval);
+    // 시작 후 약간 뒤 1회, 이후 주기
+    setTimeout(() => {
+        snapshotEspLogsForConnectedDevices().catch(() => {});
+    }, 15000);
+    espLogSnapshotInterval = setInterval(() => {
+        snapshotEspLogsForConnectedDevices().catch(() => {});
+    }, ESP_LOG_SNAPSHOT_INTERVAL_MS);
 }
 
 // 모든 네트워크 인터페이스 감지
@@ -1573,7 +1658,10 @@ async function connectToDeviceByMac(mac, silent = false) {
                         ip: ip,
                         nickname: deviceInfo.nickname,
                         pill_code: deviceInfo.pill_code || '',
-                        status: '연결됨'
+                        status: '연결됨',
+                        firmware_version: connectedDevices[mac]?.firmware_version || null,
+                        firmware_model: connectedDevices[mac]?.firmware_model || null,
+                        hmi_version: connectedDevices[mac]?.hmi_version || null
                     };
 
                         // 수동 해제 목록에 남아있다면 연결 성공 시 제거하여 이후 자동연결/재연결 대상에 포함
@@ -1582,6 +1670,8 @@ async function connectToDeviceByMac(mac, silent = false) {
                             await saveConnections();
                             logMessage(`수동 해제 목록에서 제거: ${deviceInfo.nickname}`);
                         }
+
+                    cacheDeviceVersionInfo(mac, ip).catch(() => {});
                     
                     updateConnectedTable();
                     updateMedicineColors();
@@ -4325,6 +4415,9 @@ function startPeriodicTasks() {
     
     // 초기에는 빠른 연결 상태 확인 시작
     setFastConnectionCheck();
+
+    // ESP 블랙박스 주기 스냅샷 (전원 재부팅 대비)
+    startEspLogSnapshotLoop();
     
     logMessage('주기적 작업이 시작되었습니다.');
 }
@@ -4596,6 +4689,41 @@ function sendDeviceLog(ip, mac, nickname) {
     bootstrap.Modal.getOrCreateInstance(modalEl).show();
 }
 
+async function fetchEspDayLogsWithRetry(ip, dateStr, maxAttempts = 3) {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await axios.get(`http://${ip}/logs`, {
+                params: { date: dateStr },
+                timeout: 25000,
+                responseType: 'text',
+                transformResponse: [(data) => data]
+            });
+            let text = typeof response.data === 'string' ? response.data : String(response.data ?? '');
+            // 구펌웨어가 date= 를 무시하거나 빈 파일이면 기본 /logs 한 번 더
+            if (!text || text.startsWith('(no log file')) {
+                const fb = await axios.get(`http://${ip}/logs`, {
+                    timeout: 20000,
+                    responseType: 'text',
+                    transformResponse: [(data) => data]
+                });
+                text = typeof fb.data === 'string' ? fb.data : String(fb.data ?? '');
+            }
+            return { ok: true, text, attempt };
+        } catch (err) {
+            lastErr = err;
+            if (attempt < maxAttempts) {
+                await new Promise((r) => setTimeout(r, 800 * attempt));
+            }
+        }
+    }
+    return {
+        ok: false,
+        text: `(ESP 실시간 로그 요청 실패: ${lastErr ? lastErr.message : 'unknown'})`,
+        attempt: maxAttempts
+    };
+}
+
 async function submitDeviceIssue() {
     if (!deviceIssueTarget) return;
     const textarea = document.getElementById('deviceIssueMessage');
@@ -4617,39 +4745,94 @@ async function submitDeviceIssue() {
 
     let sent = false;
     try {
-        logMessage(`🔄 ${nickname}(${ip}) 로그 수집 시작...`);
+        const today = moment().format('YYYY-MM-DD');
+        logMessage(`🔄 ${nickname}(${ip}) 당일 로그 묶음 수집 시작...`);
 
-        let deviceLog = '(로그 수집 실패)';
+        // 전송 직전 스냅샷 한 번 더 시도 (실패해도 계속)
         try {
-            const response = await axios.get(`http://${ip}/logs`, { timeout: 5000 });
-            deviceLog = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        } catch (err) {
-            deviceLog = `(로그 요청 실패: ${err.message})`;
-            logMessage(`⚠️ ${nickname} 로그 수집 실패: ${err.message}`);
+            await snapshotEspLogsForConnectedDevices();
+        } catch (_) { /* ignore */ }
+
+        const live = await fetchEspDayLogsWithRetry(ip, today, 3);
+        if (live.ok) {
+            logMessage(`📥 ${nickname} ESP 당일 로그 수신 (${live.text.length}자)`);
+            await ipcRenderer.invoke('blackbox:save-esp-snapshot', {
+                mac,
+                ip,
+                nickname,
+                logText: live.text
+            });
+        } else {
+            logMessage(`⚠️ ${nickname} ESP 실시간 로그 실패 — PC 스냅샷·앱 로그로 대체: ${live.text}`);
         }
 
-        let versionInfo = null;
-        try {
-            const vr = await axios.get(`http://${ip}/version`, { timeout: 3000 });
-            versionInfo = vr.data;
-        } catch (_) { /* 무시 */ }
+        const cached = connectedDevices[mac] || {};
+        let versionInfo = await cacheDeviceVersionInfo(mac, ip);
+        const fwVersion =
+            versionInfo?.version ||
+            cached.firmware_version ||
+            null;
+        const fwModel =
+            versionInfo?.model ||
+            cached.firmware_model ||
+            null;
+        const hmiVersion =
+            versionInfo?.hmi_version ||
+            cached.hmi_version ||
+            null;
+
+        const local = await ipcRenderer.invoke('blackbox:read-day-bundle', { mac, date: today });
+        const appLog = (local && local.appLog) || '';
+        const espSnap = (local && local.espSnapshot) || '';
+
+        const metaLines = [
+            `reported_at=${new Date().toISOString()}`,
+            `date=${today}`,
+            `nickname=${nickname}`,
+            `mac=${mac}`,
+            `ip=${ip}`,
+            `fw=${fwVersion || '?'}`,
+            `model=${fwModel || '?'}`,
+            `hmi=${hmiVersion || '?'}`,
+            `esp_live_ok=${live.ok}`,
+            `pc_app_log_chars=${appLog.length}`,
+            `pc_esp_snap_chars=${espSnap.length}`,
+            `esp_live_chars=${live.text ? live.text.length : 0}`
+        ].join('\n');
+
+        const log_text = [
+            '===== [메타] =====',
+            metaLines,
+            '',
+            '===== [ESP 블랙박스 당일 / 실시간] =====',
+            live.text || '(없음)',
+            '',
+            '===== [PC에 저장된 ESP 스냅샷 당일] =====',
+            espSnap || '(스냅샷 없음 — 기기가 한동안 연결되지 않았거나 스냅샷 전 재부팅)',
+            '',
+            '===== [PC 앱 당일 로그] =====',
+            appLog || '(앱 로그 없음)'
+        ].join('\n');
 
         const result = await ipcRenderer.invoke('api:send-device-log', {
             mac,
             ip,
             nickname,
-            firmware_version: versionInfo?.version || null,
-            firmware_model: versionInfo?.model || null,
-            hmi_version: versionInfo?.hmi_version || null,
-            log_text: deviceLog,
+            firmware_version: fwVersion,
+            firmware_model: fwModel,
+            hmi_version: hmiVersion,
+            log_text,
             user_message: userMessage
         });
 
         if (result.success) {
             sent = true;
-            logMessage(`✅ ${nickname} 문제사항 전송 완료`);
+            logMessage(`✅ ${nickname} 문제사항 전송 완료 (당일 로그 묶음)`);
             bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-            await showMessage('success', `${nickname}의 문제사항과 로그가 서버로 전송되었습니다.\n개발팀에서 확인 후 조치하겠습니다.`);
+            await showMessage(
+                'success',
+                `${nickname}의 문제사항과 당일 로그(기기·PC)가 서버로 전송되었습니다.\n개발팀에서 확인 후 조치하겠습니다.`
+            );
         } else {
             logMessage(`❌ ${nickname} 문제사항 전송 실패: ${result.error}`);
             await showMessage('error', `전송 실패: ${result.error || '서버 연결 오류'}`);
@@ -6920,7 +7103,7 @@ const HMI_PC_TFT_URL =
 
 let hmiLcdModalInstance = null;
 let hmiLatestCached = '';
-/** @type {{ mac: string, ip: string, nickname: string, hmiVersion: string|null, error: string|null, selected: boolean }[]} */
+/** @type {{ mac: string, ip: string, nickname: string, hmiVersion: string|null, error: string|null, selected: boolean, retrying?: boolean, unsupported?: boolean }[]} */
 let hmiLcdRows = [];
 
 function buildHmiLcdRowsFromConnections() {
@@ -6932,7 +7115,9 @@ function buildHmiLcdRowsFromConnections() {
             nickname: d.nickname || (savedConnections[mac] && savedConnections[mac].nickname) || mac,
             hmiVersion: null,
             error: null,
-            selected: true
+            selected: true,
+            retrying: false,
+            unsupported: false
         }));
 }
 
@@ -6984,7 +7169,9 @@ function renderHmiDeviceList() {
 
         const verLine = document.createElement('div');
         verLine.className = 'small mb-1';
-        if (row.error && !row.hmiVersion) {
+        if (row.retrying && !row.hmiVersion) {
+            verLine.textContent = 'HMI 버전: 확인 중…';
+        } else if (row.error && !row.hmiVersion) {
             verLine.textContent = 'HMI 버전: 확인 실패';
         } else if (row.hmiVersion) {
             verLine.textContent = `HMI 버전: ${row.hmiVersion}`;
@@ -6994,7 +7181,10 @@ function renderHmiDeviceList() {
 
         const badge = document.createElement('span');
         badge.className = 'badge rounded-pill';
-        if (row.error && !row.hmiVersion) {
+        if (row.retrying && !row.hmiVersion) {
+            badge.classList.add('bg-info', 'text-dark');
+            badge.textContent = '재시도 중';
+        } else if (row.error && !row.hmiVersion) {
             badge.classList.add('bg-danger');
             badge.textContent = '오류';
         } else if (!hmiLatestCached) {
@@ -7037,31 +7227,173 @@ async function refreshHmiLatestVersion() {
     }
 }
 
-async function refreshHmiDeviceVersionsOnly() {
-    for (const row of hmiLcdRows) {
-        try {
-            const r = await axios.get(`http://${row.ip}/version`, { timeout: 4000 });
-            row.hmiVersion =
-                r.data && r.data.hmi_version != null ? String(r.data.hmi_version).trim() : '';
-            row.error = row.hmiVersion ? null : 'hmi_version 없음 (ESP32 펌웨어 확인)';
-            if (!row.hmiVersion) row.selected = false;
-        } catch (e) {
-            row.error = e.message || String(e);
-            row.hmiVersion = null;
-            row.selected = false;
-        }
-    }
+/** 기기 1대의 HMI 버전 조회 (일시적 끊김·LCD OTA 직후 대비 재시도) */
+async function fetchHmiDeviceVersionOnce(ip, timeoutMs = 5000) {
+    const r = await axios.get(`http://${ip}/version`, {
+        timeout: timeoutMs,
+        // 연결 끊김 직후 소켓 재사용 실패를 줄임
+        headers: { Connection: 'close' },
+        validateStatus: (s) => s === 200
+    });
+    const raw = r.data && r.data.hmi_version != null ? String(r.data.hmi_version).trim() : '';
+    return raw;
 }
 
+/**
+ * @param {string} ip
+ * @param {{ attempts?: number, delayMs?: number, timeoutMs?: number, onAttempt?: function }} [opts]
+ */
+async function fetchHmiDeviceVersionWithRetry(ip, opts = {}) {
+    const attempts = opts.attempts ?? 3;
+    const delayMs = opts.delayMs ?? 1000;
+    const timeoutMs = opts.timeoutMs ?? 5000;
+    let lastErr = null;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            if (opts.onAttempt) opts.onAttempt(i + 1, attempts);
+            const v = await fetchHmiDeviceVersionOnce(ip, timeoutMs);
+            // HTTP 성공인데 필드 없음 = 펌웨어 미지원(재시도 무의미)
+            if (!v) {
+                return {
+                    reachable: true,
+                    hmiVersion: null,
+                    error: 'hmi_version 없음 (ESP32 펌웨어 확인)',
+                    unsupported: true
+                };
+            }
+            return { reachable: true, hmiVersion: v, error: null, unsupported: false };
+        } catch (e) {
+            lastErr = e;
+            if (i < attempts - 1) {
+                // 지수 백오프 + 약간의 지터 (여러 대 동시 조회 시 충돌 완화)
+                const wait = delayMs * Math.pow(1.5, i) + Math.floor(Math.random() * 200);
+                await new Promise((r) => setTimeout(r, wait));
+            }
+        }
+    }
+    return {
+        reachable: false,
+        hmiVersion: null,
+        error: (lastErr && (lastErr.message || String(lastErr))) || '연결 실패',
+        unsupported: false
+    };
+}
+
+function applyHmiVersionResultToRow(row, result, { softFail = false } = {}) {
+    row.hmiVersion = result.hmiVersion || null;
+    if (row.hmiVersion) {
+        row.error = null;
+        row.retrying = false;
+        row.unsupported = false;
+        return;
+    }
+    // 연결은 됐지만 HMI 버전 미지원 — 오류/재시도가 아님
+    if (result.unsupported) {
+        row.error = null;
+        row.retrying = false;
+        row.unsupported = true;
+        row.selected = false;
+        return;
+    }
+    if (softFail && !result.reachable) {
+        // 아직 라운드가 남음 — 빨간 '오류' 대신 재시도 중으로 표시
+        row.error = null;
+        row.retrying = true;
+        row.unsupported = false;
+        return;
+    }
+    row.error = result.error;
+    row.retrying = false;
+    row.unsupported = false;
+    row.selected = false;
+}
+
+function isHmiVersionPending(row) {
+    return !row.hmiVersion && !row.unsupported && (row.error || row.retrying);
+}
+
+async function refreshHmiDeviceVersionsOnly(options = {}) {
+    const attempts = options.attempts ?? 3;
+    const delayMs = options.delayMs ?? 1000;
+    const timeoutMs = options.timeoutMs ?? 5000;
+    const softFail = options.softFail === true;
+
+    // 병렬 조회 — 한 대 지연이 전체 목록을 막지 않게 함
+    await Promise.all(
+        hmiLcdRows.map(async (row) => {
+            // 이미 성공·미지원 확인된 기기는 라운드 재조회 생략
+            if (options.skipOk && (row.hmiVersion || row.unsupported) && !row.error) return;
+            row.retrying = true;
+            const result = await fetchHmiDeviceVersionWithRetry(row.ip, {
+                attempts,
+                delayMs,
+                timeoutMs
+            });
+            applyHmiVersionResultToRow(row, result, { softFail });
+        })
+    );
+}
+
+/** LCD OTA·재기동 직후 /version 실패를 줄이기 위한 라운드 재시도 */
+async function refreshHmiDeviceVersionsWithRetry(maxRounds = 6, delayMs = 2000) {
+    for (let round = 0; round < maxRounds; round++) {
+        const isLast = round === maxRounds - 1;
+        // 라운드마다 기기당 재시도는 짧게 — 라운드 간 대기로 복구 시간 확보
+        await refreshHmiDeviceVersionsOnly({
+            attempts: round === 0 ? 2 : 3,
+            delayMs: 800,
+            timeoutMs: 6000,
+            softFail: !isLast,
+            skipOk: round > 0
+        });
+        const anyMissing = hmiLcdRows.some(isHmiVersionPending);
+        if (!anyMissing) {
+            if (round > 0) {
+                logMessage(`HMI LCD: 기기 버전 확인 성공 (${round + 1}라운드)`);
+            }
+            for (const r of hmiLcdRows) r.retrying = false;
+            return;
+        }
+        if (!isLast) {
+            const pending = hmiLcdRows
+                .filter((r) => !r.hmiVersion && !r.unsupported)
+                .map((r) => r.nickname || r.ip)
+                .join(', ');
+            logMessage(
+                `HMI LCD: 기기 응답 대기 중… (${round + 1}/${maxRounds}) ${pending}`
+            );
+            renderHmiDeviceList();
+            await new Promise((r) => setTimeout(r, delayMs));
+        }
+    }
+    for (const r of hmiLcdRows) r.retrying = false;
+}
+
+/**
+ * @param {{ suppressGithubErrorDialog?: boolean, postOtaDeviceRetry?: boolean }} [options]
+ *   postOtaDeviceRetry — LCD OTA 직후 Nextion/ESP 복구 대기 + /version 재시도
+ */
 async function refreshHmiLcdModalData(options = {}) {
     const suppress = !!options.suppressGithubErrorDialog;
+    const postOtaRetry = options.postOtaDeviceRetry === true;
     buildHmiLcdRowsFromConnections();
     renderHmiDeviceList();
+
+    const loadDevices = async () => {
+        if (postOtaRetry) {
+            // LCD 플래시·재기동 직후 HTTP가 잠시 죽을 수 있음
+            logMessage('HMI LCD: OTA 후 안정화 대기 (3초)…');
+            await new Promise((r) => setTimeout(r, 3000));
+            await refreshHmiDeviceVersionsWithRetry(6, 2000);
+        } else {
+            await refreshHmiDeviceVersionsOnly({ attempts: 3, delayMs: 900, timeoutMs: 5000 });
+        }
+    };
 
     try {
         logMessage('HMI LCD: GitHub version.txt 및 기기 /version 조회…');
         await refreshHmiLatestVersion();
-        await refreshHmiDeviceVersionsOnly();
+        await loadDevices();
         renderHmiDeviceList();
         logMessage(`HMI LCD: 조회 완료 (최신=${hmiLatestCached || '—'})`);
     } catch (e) {
@@ -7073,7 +7405,7 @@ async function refreshHmiLcdModalData(options = {}) {
                 `GitHub HMI 버전 확인 실패: ${msg}\n\nraw.githubusercontent.com 접근·방화벽을 확인하세요.`
             );
         }
-        await refreshHmiDeviceVersionsOnly();
+        await loadDevices();
         renderHmiDeviceList();
     }
 }
@@ -7223,8 +7555,15 @@ async function runSingleHmiLcdOta(row, latest) {
             updateHmiOtaRowProgress(ip, 100, poll.message || '실패', 'fail');
             return { ok: false, nickname: nick, message: poll.message };
         }
-        updateHmiOtaRowProgress(ip, 100, 'LCD OTA 완료', 'ok');
-        return { ok: true, nickname: nick };
+        // OTA 완료 직후 보고된 버전으로 시드 — 목록 재조회 실패 시에도 최신으로 표시
+        const reported =
+            (poll.hmi_version != null && String(poll.hmi_version).trim()) || latest || null;
+        if (reported) {
+            row.hmiVersion = reported;
+            row.error = null;
+        }
+        updateHmiOtaRowProgress(ip, 100, reported ? `LCD OTA 완료 (${reported})` : 'LCD OTA 완료', 'ok');
+        return { ok: true, nickname: nick, hmi_version: reported };
     } catch (e) {
         const detail = e.response ? `HTTP ${e.response.status}` : e.message;
         updateHmiOtaRowProgress(ip, 100, `오류: ${detail}`, 'fail');
@@ -7298,8 +7637,11 @@ async function proceedHmiLcdBatchUpdate() {
         setHmiLcdOtaUiLocked(false);
         if (btn) btn.disabled = false;
 
-        logMessage('HMI: 목록 갱신 중… (백그라운드)');
-        refreshHmiLcdModalData({ suppressGithubErrorDialog: true }).catch((e) => {
+        logMessage('HMI: 목록 갱신 중… (백그라운드, OTA 후 재시도)');
+        refreshHmiLcdModalData({
+            suppressGithubErrorDialog: true,
+            postOtaDeviceRetry: true
+        }).catch((e) => {
             logMessage(`HMI: 목록 갱신 실패 — ${e && e.message ? e.message : e}`);
         });
     } catch (e) {

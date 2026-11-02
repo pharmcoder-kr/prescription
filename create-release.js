@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.54';
+const VERSION = '1.3.55';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - JVP 용량 해석 규칙 정정 (처방일수·횟수·1회량 순서)`;
+const RELEASE_TITLE = `v${VERSION} - 문제사항 로그 블랙박스(당일 ESP·PC 묶음 전송)`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,15 +16,18 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: JVP 용량 해석 규칙 정정
+  const releaseNotes = `## v${VERSION}: 문제사항 로그 블랙박스 안정화
 
 ### 주요 변경사항
-- **JVP 용량 필드 순서 정정**: 정수·소수 처방 모두 동일한 규칙으로 해석합니다
-  - 혼자 떨어진 숫자 = 처방일수, 다음 숫자의 첫자리 = 1일 복용횟수, 그 뒤에 붙은 숫자 = 1회 복용량
-  - 정수 예) \`3  21\` → 1회량 1 / 2회 / 3일, \`6  54\` → 4 / 5회 / 6일, \`9  87\` → 7 / 8회 / 9일
-  - 소수 예) \`3  21.5\` → 1회량 1.5 / 2회 / 3일, \`9  87.5\` → 7.5 / 8회 / 9일, \`5  25.5\` → 5.5 / 2회 / 5일
-  - 공백 없이 붙은 형태(\`123315\`)도 같은 순서(123일 / 3회 / 1회량 15)로 해석합니다
-- 1회량과 처방일수 표시가 바로잡힙니다. 총량(1회량×횟수×일수)은 기존과 동일합니다
+- **문제사항 보내기**: 기기 실시간 \`/logs\`만 의존하지 않고, **당일 ESP 로그 + PC 스냅샷 + PC 앱 로그**를 묶어 서버로 전송합니다
+- **PC 상시 기록**: 앱 로그를 날짜별 파일로 저장하고, 연결된 기기의 ESP 로그를 주기적으로 스냅샷합니다 (전원 재부팅 후에도 PC에 남은 기록 전송 가능)
+- **버전 캐시**: 기기가 꺼져 있어도 이전에 확인한 FW/모델/HMI 버전을 함께 표시합니다
+- **HMI LCD 버전 조회**: OTA 직후 \`/version\` 실패를 줄이기 위한 재시도·안정화 대기 추가
+- **관리자/백엔드**: 긴 로그 본문 수용, 상세 화면에서 섹션·타임아웃 안내 개선
+
+### 참고 (ESP 펌웨어)
+- 기기 쪽 LittleFS 일별 블랙박스(\`261102_BLACK_BOX\` **1.0.49**)는 별도 플래시/OTA가 필요합니다
+- PC 1.3.55만 업데이트해도 스냅샷·앱 로그 묶음 전송은 바로 적용됩니다
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.

@@ -1576,11 +1576,98 @@ ipcMain.handle('auth:logout', async () => {
   return { success: true };
 });
 
+// ── 로컬 블랙박스 (당일 PC 앱 로그 + ESP 스냅샷) ─────────────────────────────
+const BLACKBOX_MAX_APP_LOG_BYTES = 2 * 1024 * 1024;
+const BLACKBOX_MAX_ESP_SNAP_BYTES = 1 * 1024 * 1024;
+const BLACKBOX_MAX_BUNDLE_CHARS = 900000; // ~900KB 텍스트 (서버 전송 상한)
+
+function blackboxDayDir(dateStr) {
+  const day = dateStr || new Date().toISOString().slice(0, 10);
+  const dir = path.join(app.getPath('userData'), 'blackbox', day);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return { day, dir };
+}
+
+function blackboxSafeMac(mac) {
+  return String(mac || 'unknown').replace(/[^a-fA-F0-9]/g, '').toLowerCase() || 'unknown';
+}
+
+function blackboxAppendFile(filePath, text, maxBytes) {
+  const line = String(text || '');
+  if (!line) return;
+  fs.appendFileSync(filePath, line.endsWith('\n') ? line : `${line}\n`, 'utf8');
+  try {
+    const st = fs.statSync(filePath);
+    if (st.size > maxBytes) {
+      const buf = fs.readFileSync(filePath);
+      const keep = buf.subarray(Math.max(0, buf.length - Math.floor(maxBytes * 0.75)));
+      fs.writeFileSync(filePath, keep);
+    }
+  } catch (_) {
+    /* ignore trim errors */
+  }
+}
+
+function blackboxReadFileCapped(filePath, maxChars) {
+  if (!fs.existsSync(filePath)) return '';
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (raw.length <= maxChars) return raw;
+    return `...(앞부분 생략 ${raw.length - maxChars}자)...\n` + raw.slice(-maxChars);
+  } catch (e) {
+    return `(읽기 실패: ${e.message})`;
+  }
+}
+
+ipcMain.handle('blackbox:append-app-log', async (event, { message, ts } = {}) => {
+  try {
+    const { dir } = blackboxDayDir();
+    const filePath = path.join(dir, 'app.log');
+    const stamp = ts || new Date().toISOString();
+    blackboxAppendFile(filePath, `[${stamp}] ${message || ''}`, BLACKBOX_MAX_APP_LOG_BYTES);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('blackbox:save-esp-snapshot', async (event, { mac, ip, nickname, logText } = {}) => {
+  try {
+    const { dir, day } = blackboxDayDir();
+    const safeMac = blackboxSafeMac(mac);
+    const filePath = path.join(dir, `${safeMac}.esp.log`);
+    const header = `\n===== snapshot ${new Date().toISOString()} ip=${ip || ''} nick=${nickname || ''} =====\n`;
+    blackboxAppendFile(filePath, header + String(logText || ''), BLACKBOX_MAX_ESP_SNAP_BYTES);
+    return { ok: true, day, path: filePath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('blackbox:read-day-bundle', async (event, { mac, date } = {}) => {
+  try {
+    const { dir, day } = blackboxDayDir(date);
+    const appLog = blackboxReadFileCapped(path.join(dir, 'app.log'), 350000);
+    const safeMac = blackboxSafeMac(mac);
+    const espSnap = blackboxReadFileCapped(path.join(dir, `${safeMac}.esp.log`), 350000);
+    return { ok: true, day, appLog, espSnapshot: espSnap };
+  } catch (e) {
+    return { ok: false, error: e.message, day: date || '', appLog: '', espSnapshot: '' };
+  }
+});
+
 // ── 디바이스 로그(문제사항) 서버 전송 ──────────────────────────────────────────
 ipcMain.handle('api:send-device-log', async (event, payload) => {
   try {
     const credentials = loadCredentials();
     const deviceUid = await getOrCreateDeviceUid();
+
+    let logText = String(payload.log_text || '');
+    if (logText.length > BLACKBOX_MAX_BUNDLE_CHARS) {
+      logText =
+        logText.slice(0, BLACKBOX_MAX_BUNDLE_CHARS) +
+        `\n\n...[TRUNCATED by PC client: total ${payload.log_text.length} chars]...\n`;
+    }
 
     const body = {
       username: credentials?.username || null,
@@ -1591,7 +1678,7 @@ ipcMain.handle('api:send-device-log', async (event, payload) => {
       firmware_version: payload.firmware_version,
       firmware_model: payload.firmware_model,
       hmi_version: payload.hmi_version,
-      log_text: payload.log_text,
+      log_text: logText,
       user_message: payload.user_message || null,
       app_version: app.getVersion(),
       platform: os.platform(),
@@ -1601,7 +1688,7 @@ ipcMain.handle('api:send-device-log', async (event, payload) => {
     const response = await axios.post(
       `${API_BASE}/v1/device-logs`,
       body,
-      { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
+      { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
     );
 
     console.log('✅ 디바이스 로그 전송 성공');

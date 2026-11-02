@@ -211,7 +211,8 @@
                         </div>
                         <h6>사용자 메시지:</h6>
                         <div id="dlUserMessage" class="alert alert-warning mb-3" style="white-space:pre-wrap;"></div>
-                        <h6>ESP32 로그:</h6>
+                        <div id="dlLogHint" class="alert alert-info d-none mb-2 small"></div>
+                        <h6>로그 묶음 (ESP 블랙박스 / PC 스냅샷 / PC 앱):</h6>
                         <pre id="dlLogText" style="max-height:500px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; padding:1rem; border-radius:0.5rem; font-size:0.8rem; white-space:pre-wrap;"></pre>
                     </div>
                 </div>
@@ -829,6 +830,27 @@
                 const { userMsg, logText } = splitDeviceLog(log);
                 document.getElementById('dlUserMessage').textContent = userMsg || '(작성된 내용 없음)';
                 document.getElementById('dlLogText').textContent = logText || '(로그 없음)';
+
+                const hintEl = document.getElementById('dlLogHint');
+                if (hintEl) {
+                    const onlyTimeout =
+                        logText &&
+                        /로그 요청 실패|timeout of \d+ms exceeded/i.test(logText) &&
+                        !/===== \[PC/.test(logText) &&
+                        !/===== \[ESP/.test(logText);
+                    if (onlyTimeout) {
+                        hintEl.textContent =
+                            '기기 실시간 로그만 실패한 구형 전송입니다. 전원 재부팅 후면 ESP RAM 로그는 사라지고, 새 앱에서는 PC 스냅샷·앱 로그 섹션이 함께 옵니다.';
+                        hintEl.classList.remove('d-none');
+                    } else if (logText && /esp_live_ok=false/.test(logText)) {
+                        hintEl.textContent =
+                            '전송 당시 기기 실시간 /logs 는 실패했습니다. 아래 PC 스냅샷·앱 당일 로그를 우선 확인하세요.';
+                        hintEl.classList.remove('d-none');
+                    } else {
+                        hintEl.textContent = '';
+                        hintEl.classList.add('d-none');
+                    }
+                }
 
                 new bootstrap.Modal(document.getElementById('deviceLogModal')).show();
             } catch (error) {

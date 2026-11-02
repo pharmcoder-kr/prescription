@@ -59,7 +59,8 @@ async function sendTelegramNotification(message) {
 
 // 미들웨어
 app.use(cors());
-app.use(express.json());
+// 문제사항 당일 로그 묶음(ESP+PC) 전송을 위해 body 한도 확대
+app.use(express.json({ limit: '2mb' }));
 
 // 관리자 페이지 라우트
 app.get('/admin', (req, res) => {
@@ -1328,6 +1329,15 @@ app.post('/v1/device-logs', async (req, res) => {
       return res.status(400).json({ error: 'mac과 log_text는 필수입니다.' });
     }
 
+    const DEVICE_LOG_MAX_CHARS = 950000;
+    let storedLogText = String(log_text);
+    if (storedLogText.length > DEVICE_LOG_MAX_CHARS) {
+      const originalLen = storedLogText.length;
+      storedLogText =
+        storedLogText.slice(0, DEVICE_LOG_MAX_CHARS) +
+        `\n\n...[TRUNCATED by server: original ${originalLen} chars]...\n`;
+    }
+
     // pharmacy 이름 조회 (username이 있는 경우)
     let pharmacy_name = null;
     let pharmacy_ykiin = null;
@@ -1354,7 +1364,7 @@ app.post('/v1/device-logs', async (req, res) => {
       firmware_version: firmware_version || null,
       firmware_model: firmware_model || null,
       hmi_version: hmi_version || null,
-      log_text,
+      log_text: storedLogText,
       user_message: user_message || null,
       app_version: app_version || null,
       platform: platform || null,
@@ -1367,7 +1377,7 @@ app.post('/v1/device-logs', async (req, res) => {
     if (error && /user_message/.test(error.message || '')) {
       const { user_message: _omit, ...legacyRow } = row;
       if (user_message) {
-        legacyRow.log_text = `[사용자 메시지]\n${user_message}\n\n[ESP32 로그]\n${log_text}`;
+        legacyRow.log_text = `[사용자 메시지]\n${user_message}\n\n[ESP32 로그]\n${storedLogText}`;
       }
       ({ data, error } = await supabase.from('device_logs').insert([legacyRow]).select());
     }
