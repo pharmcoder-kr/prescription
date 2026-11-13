@@ -1619,6 +1619,41 @@ function blackboxReadFileCapped(filePath, maxChars) {
   }
 }
 
+/** ESP 로그에서 연결확인 폴링 등 노이즈 제거 + 당일(YYYY-MM-DD) 라인만 유지 */
+function sanitizeEspLogText(text, day) {
+  const lines = String(text || '').split(/\r?\n/);
+  const kept = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/^===== snapshot /.test(t)) continue;
+    if (/^----- RAM/.test(t)) continue;
+    // PC 연결확인·버전/상태폴링 (문제사항 전송 시 도배 제거)
+    if (/요청:\s*GET \/\s/i.test(line) || /요청:\s*GET \/ HTTP/i.test(line)) continue;
+    if (/요청:\s*$/.test(t) || /요청:\s+$/.test(line)) continue;
+    if (/요청:\s*GET \/version/i.test(line)) continue;
+    if (/버전 정보:\s*FW=/i.test(line)) continue;
+    if (/요청:\s*GET \/ota\/status/i.test(line)) continue;
+    if (/요청:\s*GET \/hmi-ota\/status/i.test(line)) continue;
+    if (/요청:\s*GET \/logs/i.test(line)) continue;
+    kept.push(line);
+  }
+
+  if (!day) return kept.join('\n').trim();
+
+  const datedToday = kept.filter((line) => {
+    const m = line.match(/(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}/);
+    return m && m[1] === day;
+  });
+  // 날짜 스탬프가 있는 펌웨어면 당일만, 구펌웨어(스탬프 없음)면 노이즈 제거본 전체
+  if (datedToday.length > 0) return datedToday.join('\n').trim();
+  const hasAnyDateStamp = kept.some((line) =>
+    /(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}/.test(line)
+  );
+  if (hasAnyDateStamp) return ''; // 다른 날짜만 있음
+  return kept.join('\n').trim();
+}
+
 ipcMain.handle('blackbox:append-app-log', async (event, { message, ts } = {}) => {
   try {
     const { dir } = blackboxDayDir();
@@ -1636,9 +1671,17 @@ ipcMain.handle('blackbox:save-esp-snapshot', async (event, { mac, ip, nickname, 
     const { dir, day } = blackboxDayDir();
     const safeMac = blackboxSafeMac(mac);
     const filePath = path.join(dir, `${safeMac}.esp.log`);
-    const header = `\n===== snapshot ${new Date().toISOString()} ip=${ip || ''} nick=${nickname || ''} =====\n`;
-    blackboxAppendFile(filePath, header + String(logText || ''), BLACKBOX_MAX_ESP_SNAP_BYTES);
-    return { ok: true, day, path: filePath };
+    const cleaned = sanitizeEspLogText(logText, day);
+    // 누적 append 대신 최신 정제본으로 덮어씀 (부팅 로그·GET / 반복 저장 방지)
+    const header =
+      `===== snapshot ${new Date().toISOString()} ip=${ip || ''} nick=${nickname || ''} date=${day} =====\n`;
+    let body = header + (cleaned || '(정제 후 내용 없음)');
+    if (Buffer.byteLength(body, 'utf8') > BLACKBOX_MAX_ESP_SNAP_BYTES) {
+      body = body.slice(0, Math.floor(BLACKBOX_MAX_ESP_SNAP_BYTES * 0.9));
+      body += '\n...(truncated)...\n';
+    }
+    fs.writeFileSync(filePath, body.endsWith('\n') ? body : `${body}\n`, 'utf8');
+    return { ok: true, day, path: filePath, chars: cleaned.length };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -1649,10 +1692,20 @@ ipcMain.handle('blackbox:read-day-bundle', async (event, { mac, date } = {}) => 
     const { dir, day } = blackboxDayDir(date);
     const appLog = blackboxReadFileCapped(path.join(dir, 'app.log'), 350000);
     const safeMac = blackboxSafeMac(mac);
-    const espSnap = blackboxReadFileCapped(path.join(dir, `${safeMac}.esp.log`), 350000);
-    return { ok: true, day, appLog, espSnapshot: espSnap };
+    const rawEsp = blackboxReadFileCapped(path.join(dir, `${safeMac}.esp.log`), 500000);
+    const espSnapshot = sanitizeEspLogText(rawEsp, day);
+    return { ok: true, day, appLog, espSnapshot };
   } catch (e) {
     return { ok: false, error: e.message, day: date || '', appLog: '', espSnapshot: '' };
+  }
+});
+
+ipcMain.handle('blackbox:sanitize-esp-log', async (event, { text, date } = {}) => {
+  try {
+    const day = date || new Date().toISOString().slice(0, 10);
+    return { ok: true, text: sanitizeEspLogText(text, day) };
+  } catch (e) {
+    return { ok: false, text: '', error: e.message };
   }
 });
 

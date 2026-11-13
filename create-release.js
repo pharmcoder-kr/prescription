@@ -5,9 +5,9 @@ const path = require('path');
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 const OWNER = 'pharmcoder-kr';
 const REPO = 'prescription';
-const VERSION = '1.3.55';
+const VERSION = '1.3.60';
 const TAG = `v${VERSION}`;
-const RELEASE_TITLE = `v${VERSION} - 문제사항 로그 블랙박스(당일 ESP·PC 묶음 전송)`;
+const RELEASE_TITLE = `v${VERSION} - 이팜 DAT 처방전 연동`;
 
 async function createRelease() {
   if (!GITHUB_TOKEN) {
@@ -16,18 +16,16 @@ async function createRelease() {
     process.exit(1);
   }
 
-  const releaseNotes = `## v${VERSION}: 문제사항 로그 블랙박스 안정화
+  const releaseNotes = `## v${VERSION}: 이팜 신규 DAT 처방전 포맷 지원
 
 ### 주요 변경사항
-- **문제사항 보내기**: 기기 실시간 \`/logs\`만 의존하지 않고, **당일 ESP 로그 + PC 스냅샷 + PC 앱 로그**를 묶어 서버로 전송합니다
-- **PC 상시 기록**: 앱 로그를 날짜별 파일로 저장하고, 연결된 기기의 ESP 로그를 주기적으로 스냅샷합니다 (전원 재부팅 후에도 PC에 남은 기록 전송 가능)
-- **버전 캐시**: 기기가 꺼져 있어도 이전에 확인한 FW/모델/HMI 버전을 함께 표시합니다
-- **HMI LCD 버전 조회**: OTA 직후 \`/version\` 실패를 줄이기 위한 재시도·안정화 대기 추가
-- **관리자/백엔드**: 긴 로그 본문 수용, 상세 화면에서 섹션·타임아웃 안내 개선
+- **이팜 DAT 파싱**: 소수 1회량(\`0.25\`, \`0.5\`, \`8.5\` 등)이 숫자로 들어간 \`.dat\` 파일을 인식합니다
+- **기존 TXT 유지**: 구형 JVM 문자코드(\`a\`~\`x\`) \`.txt\` 양식도 그대로 지원합니다
+- **파일 감시**: 이팜 선택 시 \`.txt\` / \`.dat\` 모두 자동 감지합니다
+- **총량 계산**: DAT는 \`1회량 × 횟수 × 일수\`로 총량을 계산해 조제 연동합니다
 
-### 참고 (ESP 펌웨어)
-- 기기 쪽 LittleFS 일별 블랙박스(\`261102_BLACK_BOX\` **1.0.49**)는 별도 플래시/OTA가 필요합니다
-- PC 1.3.55만 업데이트해도 스냅샷·앱 로그 묶음 전송은 바로 적용됩니다
+### 참고
+- ESP32로는 기존과 같이 총량을 **정수 mL로 올림**(\`Math.ceil\`)해 전달합니다 (예: 76.5 → 77)
 
 ## 설치 방법
 아래의 \`auto-syrup-setup-${VERSION}.exe\` 파일을 다운로드하여 실행하세요.
@@ -45,12 +43,11 @@ async function createRelease() {
     console.log('');
 
     const apiHeaders = {
-      'Authorization': `token ${GITHUB_TOKEN}`,
-      'Accept': 'application/vnd.github.v3+json'
+      Authorization: `token ${GITHUB_TOKEN}`,
+      Accept: 'application/vnd.github.v3+json'
     };
 
     console.log('1️⃣  기존 Release 확인 중...');
-    let releaseResponse;
     let releaseId;
     let uploadUrl;
 
@@ -59,14 +56,14 @@ async function createRelease() {
       { headers: apiHeaders }
     );
 
-    const existing = existingReleases.data.find(release => release.tag_name === TAG);
+    const existing = existingReleases.data.find((release) => release.tag_name === TAG);
 
     if (existing) {
       console.log(`✅ 기존 Release 발견 (ID: ${existing.id})`);
       releaseId = existing.id;
       uploadUrl = existing.upload_url.replace('{?name,label}', '');
 
-      releaseResponse = await axios.patch(
+      await axios.patch(
         `https://api.github.com/repos/${OWNER}/${REPO}/releases/${releaseId}`,
         {
           name: RELEASE_TITLE,
@@ -78,7 +75,7 @@ async function createRelease() {
       console.log('✅ Release 내용 업데이트 완료');
     } else {
       console.log('📦 새 Release 생성 중...');
-      releaseResponse = await axios.post(
+      const releaseResponse = await axios.post(
         `https://api.github.com/repos/${OWNER}/${REPO}/releases`,
         {
           tag_name: TAG,
@@ -122,70 +119,52 @@ async function createRelease() {
       );
 
       for (const asset of assetsResponse.data) {
-        const shouldDelete = filesToUpload.some(file => file.name === asset.name);
-        if (shouldDelete) {
-          console.log(`   삭제 중: ${asset.name}`);
+        const shouldReplace = filesToUpload.some((f) => f.name === asset.name);
+        if (shouldReplace) {
+          console.log(`🗑️  기존 에셋 삭제: ${asset.name}`);
           await axios.delete(
             `https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${asset.id}`,
             { headers: apiHeaders }
           );
-          console.log(`   ✅ 삭제 완료: ${asset.name}`);
         }
       }
-    } catch (error) {
-      console.log('   기존 에셋 확인 중 오류 (무시하고 계속):', error.message);
+    } catch (e) {
+      console.log(`⚠️  에셋 목록 조회/삭제 중 경고: ${e.message}`);
     }
-    console.log('');
 
+    console.log('');
     console.log('3️⃣  파일 업로드 중...');
+
     for (const file of filesToUpload) {
-      if (!fs.existsSync(file.path)) {
-        console.log(`⚠️  파일 없음: ${file.path}`);
+      const filePath = path.join(__dirname, file.path);
+      if (!fs.existsSync(filePath)) {
+        console.log(`⚠️  파일 없음 (건너뜀): ${file.path}`);
         continue;
       }
 
-      const fileData = fs.readFileSync(file.path);
-      const fileSize = fs.statSync(file.path).size;
-      const fileSizeMB = (fileSize / 1024 / 1024).toFixed(2);
+      const fileSize = fs.statSync(filePath).size;
+      console.log(`📤 업로드: ${file.name} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`);
 
-      console.log(`   업로드: ${file.name} (${fileSizeMB} MB)`);
-
-      try {
-        await axios.post(
-          `${uploadUrl}?name=${encodeURIComponent(file.name)}`,
-          fileData,
-          {
-            headers: {
-              'Authorization': `token ${GITHUB_TOKEN}`,
-              'Content-Type': file.contentType,
-              'Content-Length': fileSize
-            },
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity
-          }
-        );
-
-        console.log(`   ✅ 업로드 완료: ${file.name}`);
-      } catch (error) {
-        console.log(`   ❌ 업로드 실패: ${file.name} - ${error.message}`);
-        if (error.response) {
-          console.log(`      상태 코드: ${error.response.status}`);
-          console.log(`      응답: ${JSON.stringify(error.response.data)}`);
-        }
-      }
+      const fileData = fs.readFileSync(filePath);
+      await axios.post(`${uploadUrl}?name=${encodeURIComponent(file.name)}`, fileData, {
+        headers: {
+          ...apiHeaders,
+          'Content-Type': file.contentType,
+          'Content-Length': fileSize
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      });
+      console.log(`✅ 업로드 완료: ${file.name}`);
     }
 
     console.log('');
     console.log('===========================================');
-    console.log('✅ Release 작업 완료!');
-    console.log(`🔗 URL: ${releaseResponse.data.html_url}`);
+    console.log('🎉 Release 완료!');
+    console.log(`🔗 https://github.com/${OWNER}/${REPO}/releases/tag/${TAG}`);
     console.log('===========================================');
   } catch (error) {
-    console.error('❌ Release 생성 실패:', error.message);
-    if (error.response) {
-      console.error('상태 코드:', error.response.status);
-      console.error('응답:', JSON.stringify(error.response.data, null, 2));
-    }
+    console.error('❌ Release 실패:', error.response?.data || error.message);
     process.exit(1);
   }
 }

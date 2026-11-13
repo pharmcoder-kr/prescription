@@ -1262,6 +1262,69 @@ function normalizeMacAddress(macStr) {
     return String(macStr || '').replace(/[:\-]/g, '').toUpperCase();
 }
 
+/**
+ * OTA·DHCP 재할당 후 IP가 바뀌어도 connectedDevices에 옛 IP가 남는 문제를 막음.
+ * @returns {boolean} IP가 실제로 바뀌었으면 true
+ */
+function syncConnectedDeviceIp(mac, newIp, { reason = '', silent = false } = {}) {
+    if (!mac || !newIp || !connectedDevices[mac]) return false;
+    const oldIp = connectedDevices[mac].ip;
+    if (oldIp === newIp) {
+        connectedDevices[mac].status = '연결됨';
+        return false;
+    }
+    connectedDevices[mac].ip = newIp;
+    connectedDevices[mac].status = '연결됨';
+    if (savedConnections[mac]) {
+        savedConnections[mac].ip = newIp;
+    }
+    if (!silent) {
+        const nick = connectedDevices[mac].nickname || mac;
+        logMessage(
+            `기기 IP 갱신: ${nick} ${oldIp} → ${newIp}${reason ? ` (${reason})` : ''}`
+        );
+    }
+    return true;
+}
+
+/** 네트워크 스캔 테이블에서 MAC으로 현재 IP 조회 */
+function findIpInNetworkTableByMac(mac) {
+    if (!elements.networkTableBody || !mac) return null;
+    const norm = normalizeMacAddress(mac);
+    const rows = elements.networkTableBody.querySelectorAll('tr:not(.empty-row)');
+    for (const row of rows) {
+        const macCell = (row.cells[1]?.textContent || '').trim();
+        if (!macCell || macCell === '&nbsp;') continue;
+        if (normalizeMacAddress(macCell) === norm) {
+            const ip = (row.cells[0]?.textContent || '').trim();
+            if (ip && ip !== '&nbsp;') return ip;
+        }
+    }
+    return null;
+}
+
+/** 버전 조회용: connectedDevices + 스캔 테이블 기준으로 row.ip 최신화 */
+function resolveRowIpFromLiveState(row) {
+    if (!row || !row.mac) return row?.ip || null;
+    const live = connectedDevices[row.mac];
+    if (live?.ip) row.ip = live.ip;
+    const tableIp = findIpInNetworkTableByMac(row.mac);
+    if (tableIp && tableIp !== row.ip) {
+        row.ip = tableIp;
+        if (live) {
+            const changed = syncConnectedDeviceIp(row.mac, tableIp, {
+                reason: '버전 조회 전 IP 동기화'
+            });
+            if (changed) {
+                updateConnectedTable();
+                updateSavedList();
+                saveConnections().catch(() => {});
+            }
+        }
+    }
+    return row.ip;
+}
+
 // 네트워크 스캔 테이블의 동일 MAC/IP 중복 행 정리 (입력값이 있는 행 우선 유지)
 function dedupeNetworkScanTableRows() {
     if (!elements.networkTableBody) return;
@@ -1444,6 +1507,7 @@ async function scanNetwork(silent = false) {
         emptyRows.forEach(row => row.remove());
 
         // 새로운/응답한 기기들 반영
+        let scanIpChanged = false;
         uniqueDevices.forEach((deviceInfo, normalizedMac) => {
             const { ip, data, originalMac } = deviceInfo;
 
@@ -1461,7 +1525,16 @@ async function scanNetwork(silent = false) {
                     existingDevice.row.cells[2].textContent = data.status || 'ready';
                     for (const [deviceMac, connInfo] of Object.entries(connectedDevices)) {
                         if (normalizeMacAddress(deviceMac) === normalizedMac) {
-                            connInfo.status = "연결됨";
+                            // OTA 재부팅 후 DHCP IP 변경 시 연결 목록 IP도 반드시 갱신
+                            const ipChanged = syncConnectedDeviceIp(deviceMac, ip, {
+                                reason: '네트워크 스캔',
+                                silent
+                            });
+                            if (!ipChanged) {
+                                connInfo.status = '연결됨';
+                            } else {
+                                scanIpChanged = true;
+                            }
                             break;
                         }
                     }
@@ -1475,6 +1548,20 @@ async function scanNetwork(silent = false) {
 
                 existingDevices.delete(normalizedMac);
             } else {
+                // 테이블에 없던 MAC이라도 이미 연결된 기기면 IP만 갱신
+                for (const [deviceMac] of Object.entries(connectedDevices)) {
+                    if (normalizeMacAddress(deviceMac) === normalizedMac) {
+                        if (
+                            syncConnectedDeviceIp(deviceMac, ip, {
+                                reason: '네트워크 스캔(신규행)',
+                                silent
+                            })
+                        ) {
+                            scanIpChanged = true;
+                        }
+                        break;
+                    }
+                }
                 if (!silent) {
                     logMessage(`새로운 기기 발견: ${ip} (MAC: ${originalMac})`);
                 }
@@ -1541,6 +1628,16 @@ async function scanNetwork(silent = false) {
             logMessage(`스캔 완료: 이번 ${uniqueDevices.size}개 응답 / 테이블 유지 ${totalKept}개`);
         }
 
+        if (scanIpChanged) {
+            updateConnectedTable();
+            updateSavedList();
+            try {
+                await saveConnections();
+            } catch (_) {
+                /* ignore */
+            }
+        }
+
         // 스캔 완료 상태 업데이트 (유지 중인 기기 포함)
         if (totalKept > 0) {
             updateScanStatus(`${totalKept}개 유지 (이번 ${uniqueDevices.size}개 응답)`, 'success');
@@ -1564,46 +1661,70 @@ async function attemptAutoReconnect(foundDevices, silent = false) {
     
     let hasReconnectAttempt = false;
     
+    let connectedIpUpdated = false;
     for (const [savedMac, info] of Object.entries(savedConnections)) {
         const normalizedSavedMac = normalizeMac(savedMac);
-        
-        // 이미 연결되었거나 재연결 시도한 기기는 건너뛰기
-        if (connectedDevices[savedMac]) {
-            continue;
-        }
-        
+
         // 수동으로 연결을 끊은 기기는 자동 재연결하지 않음
         if (manuallyDisconnectedDevices.has(savedMac)) {
             continue;
         }
-        
+
+        // 발견된 기기 목록에서 MAC 주소로 찾기 (정규화된 MAC으로 비교)
+        const foundIP = foundDevices[normalizedSavedMac];
+        if (!foundIP) continue;
+
+        // 이미 "연결됨"이어도 OTA 후 DHCP로 IP만 바뀐 경우가 있음 → IP 동기화
+        if (connectedDevices[savedMac]) {
+            if (
+                syncConnectedDeviceIp(savedMac, foundIP, {
+                    reason: '스캔 재발견(연결 유지)',
+                    silent
+                })
+            ) {
+                connectedIpUpdated = true;
+            }
+            continue;
+        }
+
         // 재연결 시도 횟수 제한 (최대 3회)
-        const attemptCount = autoReconnectAttempted.has(normalizedSavedMac) ? 
-            autoReconnectAttempted.get(normalizedSavedMac) : 0;
-        
+        const attemptCount = autoReconnectAttempted.has(normalizedSavedMac)
+            ? autoReconnectAttempted.get(normalizedSavedMac)
+            : 0;
+
         if (attemptCount >= 3) {
             continue;
         }
-        
-        // 발견된 기기 목록에서 MAC 주소로 찾기 (정규화된 MAC으로 비교)
-        const foundIP = foundDevices[normalizedSavedMac];
-        if (foundIP) {
-            hasReconnectAttempt = true;
-            logMessage(`자동 재연결 시도 (${attemptCount + 1}/3): ${info.nickname} (${savedMac}) -> ${foundIP}`);
-            
-            // IP 업데이트
-            savedConnections[savedMac].ip = foundIP;
-            
-            // 자동 연결
-            const success = await connectToDeviceByMac(savedMac, true);
-            if (success) {
-                autoReconnectAttempted.delete(normalizedSavedMac); // 성공하면 시도 기록 삭제
-                logMessage(`자동 재연결 성공: ${info.nickname} (${foundIP})`);
-            } else {
-                // 실패 시 시도 횟수 증가
-                autoReconnectAttempted.set(normalizedSavedMac, attemptCount + 1);
-                logMessage(`자동 재연결 실패 (${attemptCount + 1}/3): ${info.nickname} (${foundIP})`);
-            }
+
+        hasReconnectAttempt = true;
+        logMessage(
+            `자동 재연결 시도 (${attemptCount + 1}/3): ${info.nickname} (${savedMac}) -> ${foundIP}`
+        );
+
+        // IP 업데이트
+        savedConnections[savedMac].ip = foundIP;
+
+        // 자동 연결
+        const success = await connectToDeviceByMac(savedMac, true);
+        if (success) {
+            autoReconnectAttempted.delete(normalizedSavedMac); // 성공하면 시도 기록 삭제
+            logMessage(`자동 재연결 성공: ${info.nickname} (${foundIP})`);
+        } else {
+            // 실패 시 시도 횟수 증가
+            autoReconnectAttempted.set(normalizedSavedMac, attemptCount + 1);
+            logMessage(
+                `자동 재연결 실패 (${attemptCount + 1}/3): ${info.nickname} (${foundIP})`
+            );
+        }
+    }
+
+    if (connectedIpUpdated) {
+        updateConnectedTable();
+        updateSavedList();
+        try {
+            await saveConnections();
+        } catch (_) {
+            /* ignore */
         }
     }
     
@@ -2305,8 +2426,24 @@ function getPrescriptionProgramLabel(program = prescriptionProgram) {
     return program || '알 수 없음';
 }
 
+function getPrescriptionFileExtensions() {
+    if (prescriptionProgram === 'upam') return ['.xml'];
+    // 이팜: 구형 JVM TXT + 신규 소수 고정폭 DAT
+    if (prescriptionProgram === 'epharm') return ['.txt', '.dat'];
+    return ['.txt'];
+}
+
 function getPrescriptionFileExtension() {
-    return prescriptionProgram === 'upam' ? '.xml' : '.txt';
+    return getPrescriptionFileExtensions()[0];
+}
+
+function isPrescriptionFileName(filename) {
+    const lower = String(filename || '').toLowerCase();
+    return getPrescriptionFileExtensions().some((ext) => lower.endsWith(ext));
+}
+
+function getPrescriptionReceiptNumberFromPath(filePath) {
+    return path.basename(filePath, path.extname(filePath));
 }
 
 function getRegisteredMedicineName(pillCode) {
@@ -2488,6 +2625,111 @@ function parseEpharmPrescriptionContent(content, filePath, receiptNumber) {
             receipt_time: receiptTime,
             receipt_date: receiptDate,
             receipt_number: receiptNumber,
+            parsed_at: moment().format('YYYY-MM-DD HH:mm:ss')
+        },
+        medicines
+    };
+}
+
+/**
+ * 이팜 신규 DAT 여부
+ * - 보험코드 + 소수4자리 1회량 + 횟수(붙임) + 일수 + N1$n$0
+ * 예) 678602150 1.00002         4  N1$1$0
+ */
+function isEpharmDatPrescriptionContent(content) {
+    const text = String(content || '');
+    return /\d{9} \d+\.\d{4}\d\s+\d+\s+N1\$\d+\$\d+/.test(text);
+}
+
+/**
+ * 이팜 신규 DAT(CP949 고정폭) → 환자/약물 구조
+ * 헤더: YYYYMMDD(8) + 접수5 + 환자명 + 주민13 + …
+ * 약: [키5][코드9] [1회량4소수][횟수1] … [일수] N1$줄$0  (레코드 약 50B)
+ */
+function parseEpharmDatPrescriptionContent(content, filePath, receiptNumber) {
+    const text = String(content || '').replace(/\r?\n/g, ' ');
+    if (!text.trim()) return null;
+
+    let patientName = '';
+    let contentDate = '';
+    let contentReceipt = '';
+
+    const headMatch = text.match(/^(\d{4})(\d{2})(\d{2})(\d{5})(\D+?)(\d{13})/);
+    if (headMatch) {
+        contentDate = `${headMatch[1]}-${headMatch[2]}-${headMatch[3]}`;
+        contentReceipt = `${headMatch[1]}${headMatch[2]}${headMatch[3]}${headMatch[4]}`;
+        patientName = String(headMatch[5] || '').trim();
+    }
+
+    // 파일명이 YYYYMMDD…면 파일명 날짜 우선, 아니면 본문 날짜
+    const fileDateMatch = String(receiptNumber || '').match(/^(\d{4})(\d{2})(\d{2})/);
+    let receiptDate = fileDateMatch
+        ? `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`
+        : (contentDate || '');
+
+    let receiptTime = '';
+    if (receiptDate) {
+        receiptTime = `${receiptDate} 00:00:00`;
+    } else {
+        try {
+            const stats = fs.statSync(filePath);
+            receiptTime = moment(stats.birthtime.getTime() > 0 ? stats.birthtime : undefined).format('YYYY-MM-DD HH:mm:ss');
+        } catch (_) {
+            receiptTime = moment().format('YYYY-MM-DD HH:mm:ss');
+        }
+        receiptDate = receiptTime.slice(0, 10);
+    }
+
+    // 짧은 파일명(00065)이면 본문 접수키(2026111300065)로 통일해 충돌 방지
+    let resolvedReceipt = receiptNumber;
+    if (contentReceipt) {
+        if (!fileDateMatch || String(receiptNumber).length <= 5) {
+            resolvedReceipt = contentReceipt;
+        }
+    }
+
+    const medicines = [];
+    const medRe = /(\d{5})(\d{9}) (\d+\.\d{4})(\d)\s+(\d+)\s+N1\$(\d+)\$\d+/g;
+    let match;
+    while ((match = medRe.exec(text)) !== null) {
+        const pillCode = match[2];
+        if (pillCode === '000000000') continue;
+
+        const volume = parseFloat(match[3]);
+        const daily = parseInt(match[4], 10) || 0;
+        const period = parseInt(match[5], 10) || 0;
+        const lineNumber = parseInt(match[6], 10) || (medicines.length + 1);
+
+        if (!Number.isFinite(volume) || volume <= 0 || daily < 1 || period < 1) {
+            logMessage(`이팜 DAT 투약량 해석 실패: 코드 ${pillCode}, 원문 ${match[0].trim()}`);
+            continue;
+        }
+
+        medicines.push({
+            pill_code: pillCode,
+            pill_name: getRegisteredMedicineName(pillCode),
+            volume,
+            daily,
+            period,
+            total: Math.round(volume * daily * period * 10000) / 10000,
+            isTablet: false,
+            date: receiptDate,
+            line_number: lineNumber
+        });
+    }
+
+    medicines.sort((a, b) => a.line_number - b.line_number);
+
+    if (!patientName && medicines.length === 0) {
+        return null;
+    }
+
+    return {
+        patient: {
+            name: patientName || '(이름 없음)',
+            receipt_time: receiptTime,
+            receipt_date: receiptDate,
+            receipt_number: resolvedReceipt,
             parsed_at: moment().format('YYYY-MM-DD HH:mm:ss')
         },
         medicines
@@ -2744,22 +2986,24 @@ function parseJvpPrescriptionContent(content, filePath, receiptNumber) {
 
 function listPrescriptionFilesInPath() {
     if (!prescriptionPath || !fs.existsSync(prescriptionPath)) return [];
-    const ext = getPrescriptionFileExtension();
     return fs.readdirSync(prescriptionPath)
-        .filter((name) => name.toLowerCase().endsWith(ext))
+        .filter((name) => isPrescriptionFileName(name))
         .map((name) => path.join(prescriptionPath, name));
 }
 
 /** 파일에서 YYYYMMDD 날짜 추출 (PM3000/이팜: 파일명 앞 8자리, 유팜: OrderDt) */
 function getPrescriptionFileDateKey(filePath) {
-    const ext = getPrescriptionFileExtension();
-    const base = path.basename(filePath, ext);
+    const base = getPrescriptionReceiptNumberFromPath(filePath);
     if (prescriptionProgram === 'pm3000' || prescriptionProgram === 'epharm') {
         const m = base.match(/^(\d{8})/);
         if (m) return m[1];
         if (prescriptionProgram === 'epharm') {
             try {
                 const content = decodeKoreanPrescriptionText(fs.readFileSync(filePath)).content;
+                // 신규 DAT: 본문 맨 앞 YYYYMMDD
+                const datDt = content.match(/^(\d{8})/);
+                if (datDt) return datDt[1];
+                // 구형 JVM TXT: 본문 날짜 보조
                 const dt = content.slice(55, 70).match(/(\d{4})\/(\d{2})\/(\d{2})/);
                 if (dt) return `${dt[1]}${dt[2]}${dt[3]}`;
             } catch (_) {
@@ -2783,21 +3027,26 @@ function getPrescriptionFileDateKey(filePath) {
 }
 
 function removePrescriptionFromMemory(filePath) {
-    const ext = getPrescriptionFileExtension();
-    const receiptNumber = path.basename(filePath, ext);
+    const receiptNumber = getPrescriptionReceiptNumberFromPath(filePath);
     parsedFiles.delete(filePath);
-    if (parsedPrescriptions[receiptNumber]) {
-        delete parsedPrescriptions[receiptNumber];
-    }
-    if (transmissionStatus[receiptNumber] !== undefined) {
-        delete transmissionStatus[receiptNumber];
-    }
+    const keysToRemove = new Set([receiptNumber]);
+    // DAT는 본문 접수키(YYYYMMDD+5자리)로 저장될 수 있음
+    Object.keys(parsedPrescriptions).forEach((key) => {
+        if (key === receiptNumber || key.endsWith(receiptNumber)) {
+            keysToRemove.add(key);
+        }
+    });
+    keysToRemove.forEach((key) => {
+        if (parsedPrescriptions[key]) delete parsedPrescriptions[key];
+        if (transmissionStatus[key] !== undefined) delete transmissionStatus[key];
+    });
     Object.keys(medicineTransmissionStatus).forEach((key) => {
-        if (key.startsWith(`${receiptNumber}_`)) {
+        const hit = [...keysToRemove].some((rn) => key.startsWith(`${rn}_`));
+        if (hit) {
             delete medicineTransmissionStatus[key];
         }
     });
-    autoDispensingQueue = autoDispensingQueue.filter((r) => r !== receiptNumber);
+    autoDispensingQueue = autoDispensingQueue.filter((r) => !keysToRemove.has(r));
 }
 
 /**
@@ -3071,11 +3320,9 @@ function parseAllPrescriptionFiles() {
     logMessage(`처방전 파일 처방전연동 시작: ${prescriptionPath}`);
     
     try {
-        // 선택된 프로그램에 따라 파일 확장자 결정
-        const fileExtension = getPrescriptionFileExtension();
         const files = fs.readdirSync(prescriptionPath)
-            .filter(file => file.endsWith(fileExtension))
-            .map(file => path.join(prescriptionPath, file));
+            .filter((file) => isPrescriptionFileName(file))
+            .map((file) => path.join(prescriptionPath, file));
         
         logMessage(`발견된 파일 수: ${files.length}`);
         
@@ -3287,8 +3534,7 @@ function parsePrescriptionFile(filePath) {
         let content = '';
         
         // 선택된 프로그램에 따라 파일 확장자 결정
-        const fileExtension = getPrescriptionFileExtension();
-        const receiptNumber = path.basename(filePath, fileExtension);
+        const receiptNumber = getPrescriptionReceiptNumberFromPath(filePath);
         
         if (prescriptionProgram === 'pm3000') {
             // PM3000, 팜플러스20 - TXT 파일 파싱 (UTF-8 우선, 아니면 CP949)
@@ -3368,20 +3614,25 @@ function parsePrescriptionFile(filePath) {
             }
 
         } else if (prescriptionProgram === 'epharm') {
-            // 이팜 - 고정폭 TXT 파싱 (CP949/UTF-8)
+            // 이팜 - 구형 JVM TXT 또는 신규 DAT (CP949/UTF-8)
             const decoded = decodeKoreanPrescriptionText(buffer);
-            console.log(`🔤 이팜 TXT 디코딩: ${path.basename(filePath)} → ${decoded.encoding}`);
-            const parsed = parseEpharmPrescriptionContent(decoded.content, filePath, receiptNumber);
+            const ext = path.extname(filePath).toLowerCase();
+            const useDat = ext === '.dat' || isEpharmDatPrescriptionContent(decoded.content);
+            console.log(`🔤 이팜 ${useDat ? 'DAT' : 'TXT'} 디코딩: ${path.basename(filePath)} → ${decoded.encoding}`);
+            const parsed = useDat
+                ? parseEpharmDatPrescriptionContent(decoded.content, filePath, receiptNumber)
+                : parseEpharmPrescriptionContent(decoded.content, filePath, receiptNumber);
             if (!parsed) {
-                logMessage(`이팜 TXT 파일 처방전연동 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
+                logMessage(`이팜 ${useDat ? 'DAT' : 'TXT'} 파일 처방전연동 실패: 필수 정보 누락 - ${path.basename(filePath)}`);
                 return;
             }
             if (parsed.medicines.length === 0) {
-                logMessage(`이팜 TXT 파싱 경고: 약물 없음 - ${path.basename(filePath)} (환자: ${parsed.patient.name})`);
+                logMessage(`이팜 ${useDat ? 'DAT' : 'TXT'} 파싱 경고: 약물 없음 - ${path.basename(filePath)} (환자: ${parsed.patient.name})`);
             } else {
-                logMessage(`이팜 TXT 파싱 완료: ${parsed.patient.name}, 약물 ${parsed.medicines.length}건`);
+                logMessage(`이팜 ${useDat ? 'DAT' : 'TXT'} 파싱 완료: ${parsed.patient.name}, 약물 ${parsed.medicines.length}건`);
             }
-            parsedPrescriptions[receiptNumber] = parsed;
+            const storeKey = parsed.patient.receipt_number || receiptNumber;
+            parsedPrescriptions[storeKey] = parsed;
             parsedFiles.add(filePath);
             saveParsedFiles();
             
@@ -3478,7 +3729,11 @@ function parsePrescriptionFile(filePath) {
             saveParsedFiles(); // parsedFiles 저장
         }
 
-        const parsedEntry = parsedPrescriptions[receiptNumber];
+        const parsedEntry = parsedPrescriptions[receiptNumber]
+            || Object.values(parsedPrescriptions).find((p) => p && p.patient && (
+                p.patient.receipt_number === receiptNumber
+                || String(p.patient.receipt_number || '').endsWith(receiptNumber)
+            ));
         if (parsedEntry && parsedEntry.patient) {
             parsedEntry.patient.file_time_ms = getPrescriptionFileTimeMs(filePath);
         }
@@ -4785,6 +5040,17 @@ async function submitDeviceIssue() {
         const appLog = (local && local.appLog) || '';
         const espSnap = (local && local.espSnapshot) || '';
 
+        let espLiveClean = '';
+        if (live.ok && live.text) {
+            const san = await ipcRenderer.invoke('blackbox:sanitize-esp-log', {
+                text: live.text,
+                date: today
+            });
+            espLiveClean = (san && san.text) || '';
+        } else if (!live.ok) {
+            espLiveClean = live.text || '';
+        }
+
         const metaLines = [
             `reported_at=${new Date().toISOString()}`,
             `date=${today}`,
@@ -4797,7 +5063,7 @@ async function submitDeviceIssue() {
             `esp_live_ok=${live.ok}`,
             `pc_app_log_chars=${appLog.length}`,
             `pc_esp_snap_chars=${espSnap.length}`,
-            `esp_live_chars=${live.text ? live.text.length : 0}`
+            `esp_live_chars=${espLiveClean.length}`
         ].join('\n');
 
         const log_text = [
@@ -4805,7 +5071,7 @@ async function submitDeviceIssue() {
             metaLines,
             '',
             '===== [ESP 블랙박스 당일 / 실시간] =====',
-            live.text || '(없음)',
+            espLiveClean || (live.ok ? '(당일·유효 로그 없음 — GET / 폴링 등 제외 후)' : '(없음)'),
             '',
             '===== [PC에 저장된 ESP 스냅샷 당일] =====',
             espSnap || '(스냅샷 없음 — 기기가 한동안 연결되지 않았거나 스냅샷 전 재부팅)',
@@ -4860,8 +5126,7 @@ function processNewPrescriptionFile(filePath) {
             return;
         }
         
-        const fileExtension = getPrescriptionFileExtension();
-        if (!filePath.endsWith(fileExtension)) {
+        if (!isPrescriptionFileName(filePath)) {
             return;
         }
         
@@ -4869,7 +5134,7 @@ function processNewPrescriptionFile(filePath) {
             return; // 이미 처리된 파일
         }
         
-        const receiptNumber = path.basename(filePath, fileExtension);
+        let receiptNumber = getPrescriptionReceiptNumberFromPath(filePath);
         logMessage(`새 파일 감지: ${path.basename(filePath)}`);
         
         // 로그인 이후에만 파싱 카운터 증가
@@ -4881,6 +5146,16 @@ function processNewPrescriptionFile(filePath) {
         }
         
         parsePrescriptionFile(filePath);
+
+        // DAT 등은 본문 접수키로 저장될 수 있음
+        const parsedAfter = Object.values(parsedPrescriptions).find((p) => p && p.patient && (
+            p.patient.receipt_number === receiptNumber
+            || String(p.patient.receipt_number || '').endsWith(receiptNumber)
+            || parsedPrescriptions[receiptNumber] === p
+        ));
+        if (parsedAfter && parsedAfter.patient && parsedAfter.patient.receipt_number) {
+            receiptNumber = parsedAfter.patient.receipt_number;
+        }
         
         // 파일에서 날짜 추출
         let datePart = '';
@@ -4923,7 +5198,7 @@ function processNewPrescriptionFile(filePath) {
         if (autoDispensing) {
             const prescription = parsedPrescriptions[receiptNumber];
             if (prescription && prescription.patient.receipt_date === formatted) {
-                const fileExt = getPrescriptionFileExtension();
+                const fileExt = path.extname(filePath) || getPrescriptionFileExtension();
                 
                 // 저장된 시럽조제기에 매핑되는 약물이 하나라도 있는지 확인 (연결 상태와 무관)
                 const hasRegisteredMedicine = prescription.medicines.some(med => {
@@ -5005,8 +5280,7 @@ function startPrescriptionMonitor() {
                 return;
             }
             
-            const fileExtension = getPrescriptionFileExtension();
-            if (!filename.endsWith(fileExtension)) {
+            if (!isPrescriptionFileName(filename)) {
                 return;
             }
             
@@ -5043,10 +5317,9 @@ function startPrescriptionMonitor() {
                     return;
                 }
                 
-                const fileExtension = getPrescriptionFileExtension();
                 const files = fs.readdirSync(prescriptionPath)
-                    .filter(file => file.endsWith(fileExtension))
-                    .map(file => path.join(prescriptionPath, file));
+                    .filter((file) => isPrescriptionFileName(file))
+                    .map((file) => path.join(prescriptionPath, file));
                 
                 files.forEach(filePath => {
                     if (!parsedFiles.has(filePath)) {
@@ -6616,27 +6889,73 @@ async function refreshEspFirmwareLatestBoth() {
     return { basicOk, loadcellOk, errors };
 }
 
+async function fetchEspDeviceVersionAtIp(ip) {
+    const r = await axios.get(`http://${ip}/version`, {
+        timeout: 4000,
+        headers: { Connection: 'close' },
+        validateStatus: (s) => s === 200
+    });
+    return {
+        version: r.data && r.data.version != null ? String(r.data.version).trim() : '',
+        model: r.data && r.data.model != null ? String(r.data.model).trim() : ''
+    };
+}
+
 async function refreshEspDeviceVersionsOnly() {
     for (const row of espFirmwareRows) {
-        try {
-            // OTA 직후 재부팅 중이면 연결 거부가 흔함 — 타임아웃을 짧게 유지
-            const r = await axios.get(`http://${row.ip}/version`, { timeout: 4000 });
-            row.version =
-                r.data && r.data.version != null ? String(r.data.version).trim() : '';
-            row.model =
-                r.data && r.data.model != null ? String(r.data.model).trim() : '';
-            row.error = null;
-        } catch (e) {
-            row.error = e.message || String(e);
+        // 이미 성공한 행은 재시도 루프에서 건너뛸 수 있음
+        if (row.version && !row.error) continue;
+
+        resolveRowIpFromLiveState(row);
+        const tryIps = [];
+        if (row.ip) tryIps.push(row.ip);
+        const tableIp = findIpInNetworkTableByMac(row.mac);
+        if (tableIp && !tryIps.includes(tableIp)) tryIps.push(tableIp);
+        const liveIp = connectedDevices[row.mac]?.ip;
+        if (liveIp && !tryIps.includes(liveIp)) tryIps.push(liveIp);
+
+        let lastErr = null;
+        let ok = false;
+        for (const ip of tryIps) {
+            try {
+                const info = await fetchEspDeviceVersionAtIp(ip);
+                row.ip = ip;
+                row.version = info.version;
+                row.model = info.model;
+                row.error = null;
+                if (connectedDevices[row.mac] && connectedDevices[row.mac].ip !== ip) {
+                    if (
+                        syncConnectedDeviceIp(row.mac, ip, {
+                            reason: '펌웨어 버전 조회'
+                        })
+                    ) {
+                        updateConnectedTable();
+                        updateSavedList();
+                        saveConnections().catch(() => {});
+                    }
+                }
+                ok = true;
+                break;
+            } catch (e) {
+                lastErr = e;
+            }
+        }
+        if (!ok) {
+            row.error = (lastErr && (lastErr.message || String(lastErr))) || '연결 실패';
             row.version = null;
             row.model = null;
         }
     }
 }
 
-/** OTA 직후 재부팅 구간에서 /version 실패를 줄이기 위해 재시도 */
+/** OTA 직후 재부팅·DHCP IP 변경 구간에서 /version 실패를 줄이기 위해 재시도 */
 async function refreshEspDeviceVersionsWithRetry(maxAttempts = 5, delayMs = 1200) {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // 매 회차 connectedDevices 최신 IP로 행 갱신 (스캔이 그동안 IP를 고쳤을 수 있음)
+        for (const row of espFirmwareRows) {
+            const live = connectedDevices[row.mac];
+            if (live?.ip) row.ip = live.ip;
+        }
         await refreshEspDeviceVersionsOnly();
         const anyMissing = espFirmwareRows.some((r) => r.error && !r.version);
         if (!anyMissing) {
@@ -6646,9 +6965,14 @@ async function refreshEspDeviceVersionsWithRetry(maxAttempts = 5, delayMs = 1200
             return;
         }
         if (attempt < maxAttempts - 1) {
+            const pending = espFirmwareRows
+                .filter((r) => r.error && !r.version)
+                .map((r) => `${r.nickname || r.mac}@${r.ip}`)
+                .join(', ');
             logMessage(
-                `펌웨어: 기기 응답 대기 중… (${attempt + 1}/${maxAttempts}) 재부팅 후 곧 복구됩니다.`
+                `펌웨어: 기기 응답 대기 중… (${attempt + 1}/${maxAttempts}) ${pending}`
             );
+            renderFirmwareDeviceList();
             await new Promise((r) => setTimeout(r, delayMs));
         }
     }
@@ -6664,12 +6988,15 @@ async function refreshEspFirmwareModalData(options = {}) {
     const postOtaRetry = options.postOtaDeviceRetry === true;
 
     logMessage('펌웨어: GitHub OTA(기본·로드셀) 및 기기 /version 조회…');
+    // 모달 행을 최신 연결 IP로 다시 맞춤 (OTA 후 DHCP 변경 대응)
+    buildEspFirmwareRowsFromConnections();
     const { basicOk, loadcellOk, errors } = await refreshEspFirmwareLatestBoth();
     try {
         if (postOtaRetry) {
-            await refreshEspDeviceVersionsWithRetry(5, 1200);
+            await refreshEspDeviceVersionsWithRetry(8, 1500);
         } else {
-            await refreshEspDeviceVersionsOnly();
+            // 일반 열기·새로고침도 IP 변경/일시 무응답 대비 짧게 재시도
+            await refreshEspDeviceVersionsWithRetry(4, 1000);
         }
     } catch (_) {
         /* ignore */
@@ -6879,22 +7206,154 @@ function espOtaDetailFromStatus(data, st) {
     return '상태 확인 중…';
 }
 
+/** OTA 직후 기기 보고 버전 조회 (GET / 우선, 실패 시 /version) */
+async function readEspReportedVersionAtIp(ip) {
+    if (!ip) return null;
+    try {
+        const root = await axios.get(`http://${ip}/`, {
+            timeout: 3000,
+            headers: { Connection: 'close' },
+            validateStatus: (s) => s === 200
+        });
+        if (root.data && root.data.version != null) {
+            return {
+                version: String(root.data.version).trim(),
+                model:
+                    root.data.model != null ? String(root.data.model).trim() : ''
+            };
+        }
+    } catch (_) {
+        /* fall through */
+    }
+    try {
+        return await fetchEspDeviceVersionAtIp(ip);
+    } catch (_) {
+        return null;
+    }
+}
+
 /**
- * @param {string} ip
- * @param {{ maxMs?: number, onProgress?: (p: { partial: number, status: string|null, detail: string, raw: any }) => void }} [options]
+ * @param {string} startIp
+ * @param {{
+ *   maxMs?: number,
+ *   mac?: string|null,
+ *   expectVersion?: string|null,
+ *   onProgress?: (p: { partial: number, status: string|null, detail: string, raw: any, ip?: string }) => void
+ * }} [options]
  */
-async function pollEspOtaStatusPc(ip, options = {}) {
+async function pollEspOtaStatusPc(startIp, options = {}) {
     const maxMs = options.maxMs ?? 600000;
     const onProgress = options.onProgress;
+    const mac = options.mac || null;
+    const expectVersion = options.expectVersion || null;
     const t0 = Date.now();
-    // ESP32 펌웨어(로드셀/기본)는 성공 시 "installing" 후 재부팅하고, 재부팅 뒤에는 "idle"로만 돌아옴.
-    // "completed"를 보내지 않으면 아래 플래그 없이 폴링이 끝까지 실패 → 배치 OTA가 1대만 하고 중단됨.
+    // ESP32: downloading → installing → 재부팅 → idle.
+    // 목표 버전 문자열 불일치(/version 지연·bin과 version.txt 불일치)로 무한 대기하지 않음.
     let sawOtaInProgress = false;
+    let sawInstalling = false;
+    let currentIp = startIp;
+    let lastGoodPct = 8;
+    let unreachableSince = null;
+    let lastIpRediscoverAt = 0;
+    let postOtaIdleSince = null;
+
+    const emit = (partial, status, detail, raw = null) => {
+        if (onProgress) {
+            onProgress({
+                partial: clampEspOtaPercent(partial),
+                status,
+                detail,
+                raw,
+                ip: currentIp
+            });
+        }
+    };
+
+    const refreshCandidateIps = () => {
+        const set = new Set();
+        if (currentIp) set.add(currentIp);
+        if (startIp) set.add(startIp);
+        if (mac) {
+            const live = connectedDevices[mac]?.ip;
+            if (live) set.add(live);
+            const tip = findIpInNetworkTableByMac(mac);
+            if (tip) set.add(tip);
+            if (savedConnections[mac]?.ip) set.add(savedConnections[mac].ip);
+        }
+        return [...set];
+    };
+
+    const markSuccess = (ip, detail) => {
+        if (mac && ip) {
+            if (
+                syncConnectedDeviceIp(mac, ip, {
+                    reason: 'OTA 완료 후 IP'
+                })
+            ) {
+                updateConnectedTable();
+                updateSavedList();
+                saveConnections().catch(() => {});
+            }
+        }
+        emit(100, 'completed', detail || 'OTA 완료');
+        return { ok: true, ip, message: detail || 'ok' };
+    };
+
+    /** idle 복귀 후: 버전 일치면 즉시 성공, 아니면 짧은 유예 뒤 절차 완료로 성공 */
+    const tryFinishAfterReboot = async (ip) => {
+        if (!postOtaIdleSince) postOtaIdleSince = Date.now();
+        const idleFor = Date.now() - postOtaIdleSince;
+        const info = await readEspReportedVersionAtIp(ip);
+        const reported = info && info.version ? info.version : null;
+
+        if (
+            reported &&
+            expectVersion &&
+            compareSemverPc(reported, expectVersion) >= 0
+        ) {
+            return markSuccess(ip, `OTA 완료 확인 (v${reported})`);
+        }
+
+        // installing(플래시 성공) 또는 거의 끝까지 받은 뒤 idle이면 재기동 완료로 간주
+        const trustFlash = sawInstalling || lastGoodPct >= 90;
+        const graceMs = trustFlash ? 4000 : 15000;
+        if (idleFor >= graceMs) {
+            if (reported && expectVersion) {
+                return markSuccess(
+                    ip,
+                    `OTA 절차 완료 (기기 v${reported}, 목표 v${expectVersion})`
+                );
+            }
+            if (reported) {
+                return markSuccess(ip, `OTA 완료 (v${reported})`);
+            }
+            return markSuccess(ip, 'OTA 완료 (재부팅 확인)');
+        }
+
+        const tip = reported
+            ? `재부팅 후 버전 확인 중… (기기 ${reported} / 목표 ${expectVersion || '?'})`
+            : '재부팅 후 버전 확인 중…';
+        emit(96, 'verifying', tip);
+        return null;
+    };
 
     while (Date.now() - t0 < maxMs) {
         await new Promise((r) => setTimeout(r, 1200));
+
+        // 연결 목록·스캔 테이블에 새 IP가 있으면 우선 전환
+        if (mac) {
+            const live = connectedDevices[mac]?.ip;
+            const tip = findIpInNetworkTableByMac(mac);
+            if (live && live !== currentIp) currentIp = live;
+            else if (tip && tip !== currentIp) currentIp = tip;
+        }
+
         try {
-            const { data } = await axios.get(`http://${ip}/ota/status`, { timeout: 8000 });
+            const { data } = await axios.get(`http://${currentIp}/ota/status`, {
+                timeout: 5000,
+                headers: { Connection: 'close' }
+            });
+            unreachableSince = null;
             const st = data && data.status;
             let pctFromDevice = null;
             if (data && typeof data.percent === 'number') {
@@ -6903,78 +7362,174 @@ async function pollEspOtaStatusPc(ip, options = {}) {
                 pctFromDevice = clampEspOtaPercent(data.progress);
             }
 
-            if (st === 'downloading' || st === 'installing') {
+            if (st === 'downloading' || st === 'installing' || st === 'writing') {
                 sawOtaInProgress = true;
+                postOtaIdleSince = null;
             } else if (pctFromDevice != null && pctFromDevice > 0) {
                 sawOtaInProgress = true;
             }
+            if (st === 'installing' || st === 'writing') {
+                sawInstalling = true;
+                lastGoodPct = Math.max(lastGoodPct, 98);
+            }
+            if (pctFromDevice != null) {
+                lastGoodPct = Math.max(lastGoodPct, pctFromDevice);
+            }
 
             const elapsed = Date.now() - t0;
-            let partial = pctFromDevice;
-            if (partial == null) {
+            let partial =
+                pctFromDevice != null
+                    ? Math.max(lastGoodPct, pctFromDevice)
+                    : Math.max(lastGoodPct, Math.min(94, 10 + (elapsed / maxMs) * 84));
+
+            emit(partial, st, espOtaDetailFromStatus(data, st), data);
+
+            if (st === 'failed') {
+                return { ok: false, message: (data && data.message) || 'failed', ip: currentIp };
+            }
+            if (st === 'completed') {
+                return markSuccess(currentIp, 'OTA 완료');
+            }
+            // installing은 재부팅 직전 — 재기동 후 idle에서 완료 처리
+            if (st === 'installing' || st === 'writing') {
+                emit(98, st, '플래시 완료, 재부팅 대기…', data);
+                continue;
+            }
+            if ((sawOtaInProgress || sawInstalling) && st === 'idle') {
+                const done = await tryFinishAfterReboot(currentIp);
+                if (done) return done;
+                continue;
+            }
+            if (st && st !== 'idle') {
+                postOtaIdleSince = null;
+            }
+        } catch (_) {
+            if (!unreachableSince) unreachableSince = Date.now();
+            const downFor = Date.now() - unreachableSince;
+            const elapsed = Date.now() - t0;
+
+            // 재부팅 구간: 진행률이 다운로드 %에 멈추지 않도록 85%+ 구간으로 표시
+            let partial;
+            if (sawOtaInProgress || sawInstalling) {
+                partial = Math.min(95, Math.max(lastGoodPct, 85) + Math.min(9, downFor / 4000));
+            } else {
                 partial = Math.min(94, 10 + (elapsed / maxMs) * 84);
             }
 
-            const detail = espOtaDetailFromStatus(data, st);
-            if (onProgress) {
-                onProgress({ partial, status: st, detail, raw: data });
-            }
+            // 무응답이 길어지면 MAC 기준 후보 IP로 생존·완료 확인
+            const shouldRediscover =
+                (sawOtaInProgress || sawInstalling) &&
+                downFor >= 6000 &&
+                Date.now() - lastIpRediscoverAt >= 4000;
 
-            if (st === 'completed') return { ok: true };
-            // 플래시 기록 완료 직후 재부팅 직전(또는 일부 빌드)
-            if (st === 'installing') return { ok: true };
-            if (st === 'failed') {
-                return { ok: false, message: (data && data.message) || 'failed' };
-            }
-            // 다운로드/설치를 한 번이라도 본 뒤 재부팅되면 status가 idle로 리셋됨 → 성공으로 간주
-            if (sawOtaInProgress && st === 'idle') {
-                return { ok: true };
-            }
-        } catch (_) {
-            const elapsed = Date.now() - t0;
-            const partial = Math.min(94, 10 + (elapsed / maxMs) * 84);
-            if (onProgress) {
-                onProgress({
+            if (shouldRediscover) {
+                lastIpRediscoverAt = Date.now();
+                const candidates = refreshCandidateIps();
+                emit(
                     partial,
-                    status: 'reconnecting',
-                    detail: '기기 응답 대기 중… (재부팅·네트워크 지연 시 시간이 걸릴 수 있습니다)',
-                    raw: null
-                });
+                    'reconnecting',
+                    `기기 응답 대기·IP 재탐색 중… (기준 ${currentIp})`
+                );
+
+                for (const cip of candidates) {
+                    try {
+                        await axios.get(`http://${cip}/`, {
+                            timeout: 3000,
+                            headers: { Connection: 'close' }
+                        });
+                        currentIp = cip;
+                        unreachableSince = null;
+
+                        const done = await tryFinishAfterReboot(cip);
+                        if (done) return done;
+
+                        emit(
+                            Math.max(partial, 90),
+                            'reconnecting',
+                            `기기 재발견 (${cip}), 상태 확인 중…`
+                        );
+                        break;
+                    } catch (_) {
+                        /* try next */
+                    }
+                }
+            } else {
+                emit(
+                    partial,
+                    'reconnecting',
+                    '기기 응답 대기 중… (재부팅·IP 변경·네트워크 지연 시 시간이 걸릴 수 있습니다)'
+                );
             }
         }
     }
-    return { ok: false, message: '상태 확인 시간 초과' };
+
+    // 타임아웃 직전: 이미 재기동된 기기는 성공으로 마무리
+    if (sawOtaInProgress || sawInstalling) {
+        for (const cip of refreshCandidateIps()) {
+            try {
+                await axios.get(`http://${cip}/`, {
+                    timeout: 3000,
+                    headers: { Connection: 'close' }
+                });
+                const info = await readEspReportedVersionAtIp(cip);
+                const reported = info && info.version ? info.version : null;
+                if (
+                    reported &&
+                    expectVersion &&
+                    compareSemverPc(reported, expectVersion) >= 0
+                ) {
+                    return markSuccess(cip, `OTA 완료 확인 (v${reported}, 지연 감지)`);
+                }
+                return markSuccess(
+                    cip,
+                    reported
+                        ? `OTA 절차 완료 (기기 v${reported})`
+                        : 'OTA 절차 완료 (재연결 확인)'
+                );
+            } catch (_) {
+                /* next */
+            }
+        }
+    }
+
+    return { ok: false, message: '상태 확인 시간 초과', ip: currentIp };
 }
 
 /**
- * 한 대 OTA (병렬 배치용). UI는 ip 기준 행만 갱신.
+ * 한 대 OTA (병렬 배치용). UI는 시작 시점 ip 기준 행만 갱신.
  * @returns {Promise<{ ok: boolean, nickname: string, message?: string }>}
  */
 async function runSingleEspParallelOta(row, latest, fwUrl) {
-    const ip = row.ip;
-    const nick = row.nickname || ip;
+    const uiIp = row.ip;
+    const nick = row.nickname || uiIp;
     try {
-        updateEspOtaRowProgress(ip, 2, '업데이트 시작 요청 전송 중…', 'running');
-        logMessage(`펌웨어 OTA 시작: ${nick} (${ip}) → v${latest}`);
+        updateEspOtaRowProgress(uiIp, 2, '업데이트 시작 요청 전송 중…', 'running');
+        logMessage(`펌웨어 OTA 시작: ${nick} (${uiIp}) → v${latest}`);
 
         await axios.post(
-            `http://${ip}/ota/start`,
+            `http://${uiIp}/ota/start`,
             { firmware_url: fwUrl, version: latest },
             { timeout: 15000, headers: { 'Content-Type': 'application/json' } }
         );
 
-        updateEspOtaRowProgress(ip, 8, '기기에서 펌웨어를 받는 중…', 'running');
+        updateEspOtaRowProgress(uiIp, 8, '기기에서 펌웨어를 받는 중…', 'running');
 
-        const poll = await pollEspOtaStatusPc(ip, {
+        const poll = await pollEspOtaStatusPc(uiIp, {
             maxMs: 600000,
+            mac: row.mac,
+            expectVersion: latest,
             onProgress: ({ partial, detail }) => {
-                updateEspOtaRowProgress(ip, partial, detail, 'running');
+                updateEspOtaRowProgress(uiIp, partial, detail, 'running');
             }
         });
 
+        if (poll.ip && poll.ip !== row.ip) {
+            row.ip = poll.ip;
+        }
+
         if (!poll.ok) {
             updateEspOtaRowProgress(
-                ip,
+                uiIp,
                 100,
                 `${poll.message || '결과 불확실'}. 새로고침 후 버전을 확인해 주세요.`,
                 'fail'
@@ -6983,12 +7538,12 @@ async function runSingleEspParallelOta(row, latest, fwUrl) {
             return { ok: false, nickname: nick, message: poll.message };
         }
 
-        updateEspOtaRowProgress(ip, 100, 'OTA 완료', 'ok');
-        logMessage(`펌웨어 OTA 완료: ${nick}`);
+        updateEspOtaRowProgress(uiIp, 100, poll.message || 'OTA 완료', 'ok');
+        logMessage(`펌웨어 OTA 완료: ${nick}${poll.ip ? ` (${poll.ip})` : ''}`);
         return { ok: true, nickname: nick };
     } catch (e) {
         const detail = e.response ? `HTTP ${e.response.status}` : e.message;
-        updateEspOtaRowProgress(ip, 100, `오류: ${detail}`, 'fail');
+        updateEspOtaRowProgress(uiIp, 100, `오류: ${detail}`, 'fail');
         logMessage(`펌웨어 OTA 오류: ${nick} — ${detail}`);
         return { ok: false, nickname: nick, message: detail };
     }
@@ -7324,11 +7879,36 @@ async function refreshHmiDeviceVersionsOnly(options = {}) {
             // 이미 성공·미지원 확인된 기기는 라운드 재조회 생략
             if (options.skipOk && (row.hmiVersion || row.unsupported) && !row.error) return;
             row.retrying = true;
-            const result = await fetchHmiDeviceVersionWithRetry(row.ip, {
+            resolveRowIpFromLiveState(row);
+
+            let result = await fetchHmiDeviceVersionWithRetry(row.ip, {
                 attempts,
                 delayMs,
                 timeoutMs
             });
+
+            // 옛 IP로 실패하면 스캔 테이블의 새 IP로 1회 더
+            if (!result.reachable && !result.unsupported) {
+                const altIp = findIpInNetworkTableByMac(row.mac);
+                if (altIp && altIp !== row.ip) {
+                    row.ip = altIp;
+                    if (
+                        syncConnectedDeviceIp(row.mac, altIp, {
+                            reason: 'HMI 버전 조회'
+                        })
+                    ) {
+                        updateConnectedTable();
+                        updateSavedList();
+                        saveConnections().catch(() => {});
+                    }
+                    result = await fetchHmiDeviceVersionWithRetry(row.ip, {
+                        attempts: Math.max(2, attempts - 1),
+                        delayMs,
+                        timeoutMs
+                    });
+                }
+            }
+
             applyHmiVersionResultToRow(row, result, { softFail });
         })
     );
@@ -7338,6 +7918,11 @@ async function refreshHmiDeviceVersionsOnly(options = {}) {
 async function refreshHmiDeviceVersionsWithRetry(maxRounds = 6, delayMs = 2000) {
     for (let round = 0; round < maxRounds; round++) {
         const isLast = round === maxRounds - 1;
+        // 라운드마다 최신 연결 IP 반영 (DHCP 변경 대응)
+        for (const row of hmiLcdRows) {
+            const live = connectedDevices[row.mac];
+            if (live?.ip) row.ip = live.ip;
+        }
         // 라운드마다 기기당 재시도는 짧게 — 라운드 간 대기로 복구 시간 확보
         await refreshHmiDeviceVersionsOnly({
             attempts: round === 0 ? 2 : 3,
@@ -7357,7 +7942,7 @@ async function refreshHmiDeviceVersionsWithRetry(maxRounds = 6, delayMs = 2000) 
         if (!isLast) {
             const pending = hmiLcdRows
                 .filter((r) => !r.hmiVersion && !r.unsupported)
-                .map((r) => r.nickname || r.ip)
+                .map((r) => `${r.nickname || r.mac}@${r.ip}`)
                 .join(', ');
             logMessage(
                 `HMI LCD: 기기 응답 대기 중… (${round + 1}/${maxRounds}) ${pending}`
@@ -7386,7 +7971,8 @@ async function refreshHmiLcdModalData(options = {}) {
             await new Promise((r) => setTimeout(r, 3000));
             await refreshHmiDeviceVersionsWithRetry(6, 2000);
         } else {
-            await refreshHmiDeviceVersionsOnly({ attempts: 3, delayMs: 900, timeoutMs: 5000 });
+            // 일반 열기도 DHCP IP 변경·일시 무응답 대비 재시도
+            await refreshHmiDeviceVersionsWithRetry(4, 1200);
         }
     };
 
